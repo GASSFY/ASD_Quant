@@ -1,0 +1,10 @@
+# Default config for ASDQ (model + COCO calibration)
+# Override via CLI or replace paths for your setup.
+model: llava_onevision
+model_args: "pretrained=your/model-name"
+batch_size: 1
+device: null
+calib_data: coco
+n_samples: 128
+data_path: ""
+image_folder: ""
