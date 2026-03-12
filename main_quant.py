@@ -16,7 +16,13 @@ from lmms_eval.models import get_model
 
 from asdq.models import get_process_model
 from asdq.calibration.coco_vl import get_multimodal_calib_dataset
+from asdq.calibration.activation_collector import collect_layer_activations
+from asdq.metrics import asd_kwargs_from_config
 from asdq.quantization.rtn import pseudo_quantize_model_weight
+from asdq.quantization.mixed_precision import (
+    compute_global_asd_list,
+    select_high_precision_columns,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -49,6 +55,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--asd_theta1", type=float, default=0.5)
     parser.add_argument("--asd_theta2", type=float, default=0.5)
     parser.add_argument("--asd_normalize", type=bool, default=True)
+    # 混合精度：全局 ASD 排序 + 比例上限
+    parser.add_argument("--asd_mixed_precision", action="store_true", default=False)
+    parser.add_argument("--asd_high_precision_ratio", type=float, default=0.1)
+    parser.add_argument("--asd_high_w_bit", type=int, default=8)
+    parser.add_argument("--asd_low_w_bit", type=int, default=4)
     args = parser.parse_args()
     return args
 
@@ -120,14 +131,45 @@ def _run_single(args: argparse.Namespace) -> None:
         process_model.to_cuda()
     elif hasattr(process_model.model, "cuda"):
         process_model.model.cuda()
-    if args.pseudo_quant:
-        pseudo_quantize_model_weight(
+
+    high_precision_columns = None
+    if getattr(args, "asd_mixed_precision", False) and prompt_inputs is not None and prompt_kwargs is not None:
+        # 第一步：收集每层激活
+        forward_kwargs = {**prompt_inputs, **prompt_kwargs}
+        device = next(process_model.model.parameters()).device
+        layer_activations = collect_layer_activations(
             process_model.model,
-            w_bit=args.w_bit,
-            q_group_size=args.w_group,
-            zero_point=True,
+            process_model.forward,
+            [forward_kwargs],
+            device=device,
         )
-        print(f"[ASDQ] Pseudo quantization applied (w_bit={args.w_bit}).")
+        # 第二步：全模型 ASD 排序，取前 ratio 为高精度
+        asd_kwargs = asd_kwargs_from_config(vars(args))
+        global_asd_list = compute_global_asd_list(layer_activations, asd_kwargs)
+        ratio = getattr(args, "asd_high_precision_ratio", 0.1)
+        high_precision_columns = select_high_precision_columns(global_asd_list, ratio)
+        print(f"[ASDQ] Mixed precision: {len(high_precision_columns)} high-precision columns (ratio={ratio}).")
+
+    if args.pseudo_quant:
+        if high_precision_columns is not None:
+            pseudo_quantize_model_weight(
+                process_model.model,
+                w_bit=args.w_bit,
+                q_group_size=args.w_group,
+                zero_point=True,
+                high_precision_columns=high_precision_columns,
+                high_w_bit=getattr(args, "asd_high_w_bit", 8),
+                low_w_bit=getattr(args, "asd_low_w_bit", 4),
+            )
+            print("[ASDQ] Pseudo quantization applied (ASD mixed precision).")
+        else:
+            pseudo_quantize_model_weight(
+                process_model.model,
+                w_bit=args.w_bit,
+                q_group_size=args.w_group,
+                zero_point=True,
+            )
+            print(f"[ASDQ] Pseudo quantization applied (w_bit={args.w_bit}).")
 
     # Save state_dict for eval
     if args.scale_path:

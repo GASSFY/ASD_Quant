@@ -37,6 +37,15 @@ asd_theta2: 0.5
 # 是否将 K、Ψ 归一化到 [0,1] 再合并
 asd_normalize: true
 
+# ----- 混合精度（ASD 驱动：全局比例 + 高/低比特） -----
+# 全模型最多该比例的「输入通道」享受高精度（所有层一起排序，不是每层 10%）
+asd_high_precision_ratio: 0.1
+# 高 ASD 通道对应权重列使用的比特；低 ASD 使用 low
+asd_high_w_bit: 8
+asd_low_w_bit: 4
+# 是否启用混合精度（true 时需有校准激活以算 ASD，并做全局排序）
+asd_mixed_precision: false
+
 # ----- 量化参数 -----
 # 是否执行量化流程并保存（True=跑校准+量化+写 scale_path，False=仅加载已有 scale_path 时用）
 run_process: true

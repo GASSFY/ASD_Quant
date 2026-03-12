@@ -1,5 +1,11 @@
 """Minimal quantization helpers (RTN-style) for ASDQ. No dependency on MBQ."""
+from __future__ import annotations
+
+from typing import Set, Tuple
+
 import torch
+
+_EPS = 1e-9
 
 
 @torch.no_grad()
@@ -39,3 +45,142 @@ def pseudo_quantize_tensor(
         * scales
     )
     return tensor.reshape(org_shape)
+
+
+@torch.no_grad()
+def pseudo_quantize_weight_per_column(
+    weight: torch.Tensor,
+    n_bits_per_column: list[int] | torch.Tensor,
+    zero_point: bool = True,
+) -> torch.Tensor:
+    """
+    对权重矩阵按列使用不同比特伪量化（用于 ASD 混合精度：高 ASD 列高 bit，低 ASD 列低 bit）。
+
+    weight: (out_features, in_features)，即每个列对应一个输入通道。
+    n_bits_per_column: 长度为 in_features，每列使用的比特数。
+    """
+    out_f, in_f = weight.shape
+    result = weight.clone()
+    for j in range(in_f):
+        bits = (
+            int(n_bits_per_column[j].item())
+            if isinstance(n_bits_per_column, torch.Tensor)
+            else int(n_bits_per_column[j])
+        )
+        col = result[:, j].view(1, -1)  # (1, out) → 每列一个 scale/zero
+        q_col = pseudo_quantize_tensor(
+            col, n_bits=bits, zero_point=zero_point, q_group_size=col.shape[1]
+        )
+        result[:, j] = q_col.view(-1)
+    return result
+
+
+# ---------- SpQR-style: 一行×一坨列 分组，组内剔除「保存精度」后算 scale/zero，推理时合并 outlier ----------
+
+
+def _get_scale_zero_per_row(
+    tensor_2d: torch.Tensor,
+    n_bits: int,
+    zero_point: bool = True,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """从 2D 张量 (out_f, group_size) 按行算 scale/zero，返回 scale (out_f, 1), zero (out_f, 1)。"""
+    assert tensor_2d.dim() == 2
+    x = tensor_2d.float()
+    xmin = x.amin(dim=1, keepdim=True)
+    xmax = x.amax(dim=1, keepdim=True)
+    if not zero_point:
+        xmax = torch.maximum(xmin.abs(), xmax)
+        xmin = torch.where(xmin < 0, -xmax, xmin)
+    tmp = (xmin == xmax).squeeze(1)
+    if tmp.any():
+        xmin = xmin.clone()
+        xmax = xmax.clone()
+        xmin[tmp.unsqueeze(1)] = -1
+        xmax[tmp.unsqueeze(1)] = 1
+    max_int = (2**n_bits - 1) if zero_point else (2 ** (n_bits - 1) - 1)
+    min_int = 0 if zero_point else -(2 ** (n_bits - 1))
+    scale = (xmax - xmin).clamp(min=_EPS) / max_int
+    zero = (
+        (-torch.round(xmin / scale).clamp(min_int, max_int))
+        if zero_point
+        else torch.full_like(scale, (max_int + 1) / 2)
+    )
+    return scale, zero
+
+
+def _quantize_dequantize_with_scale_zero(
+    tensor: torch.Tensor,
+    scale: torch.Tensor,
+    zero: torch.Tensor,
+    n_bits: int,
+    zero_point: bool = True,
+) -> torch.Tensor:
+    """用给定的 scale/zero 做量化再反量化，返回与 tensor 同形的张量。"""
+    max_int = (2**n_bits - 1) if zero_point else (2 ** (n_bits - 1) - 1)
+    min_int = 0 if zero_point else -(2 ** (n_bits - 1))
+    scale = scale.expand_as(tensor).clamp(min=_EPS)
+    zero = zero.expand_as(tensor)
+    q = torch.clamp(torch.round(tensor / scale + zero), min_int, max_int)
+    return scale * (q - zero)
+
+
+def _fill_saved_with_mean(
+    group: torch.Tensor,
+    saved_mask: torch.Tensor,
+) -> torch.Tensor:
+    """
+    组内把「保存精度」位置用该行非保存位置的均值填上（SpQR 方式 1）。
+    group (out_f, g), saved_mask (out_f, g) bool，True = 保存精度。
+    """
+    out_f, g = group.shape
+    group_filled = group.clone()
+    for i in range(out_f):
+        row = group[i]
+        mask_row = saved_mask[i]
+        non_saved = row[~mask_row]
+        if non_saved.numel() == 0:
+            continue
+        mean_val = non_saved.mean().item()
+        group_filled[i, mask_row] = mean_val
+    return group_filled
+
+
+@torch.no_grad()
+def pseudo_quantize_weight_spqr_style(
+    weight: torch.Tensor,
+    q_group_size: int,
+    high_precision_columns: Set[Tuple[str, int]],
+    layer_key: str,
+    n_bits: int = 4,
+    zero_point: bool = True,
+) -> torch.Tensor:
+    """
+    SpQR 风格混合精度：分组 = 一行×一坨列；组内若有保存精度列则剔除后算 scale/zero（用非保存位置均值填充再 fit），
+    量化后用原权重重写保存位置；返回合并后的权重（推理时等价于 量化部分 + outlier 加回）。
+
+    weight: (out_features, in_features)
+    high_precision_columns: (layer_key, col_idx) 的集合，该列整列视为保存精度（outlier）。
+    """
+    out_f, in_f = weight.shape
+    result = weight.clone()
+    w = weight.float()
+
+    for j in range(0, in_f, q_group_size):
+        g = min(q_group_size, in_f - j)
+        group = w[:, j : j + g]
+        saved_mask = torch.zeros_like(group, dtype=torch.bool)
+        for col_local in range(g):
+            col_idx = j + col_local
+            if (layer_key, col_idx) in high_precision_columns:
+                saved_mask[:, col_local] = True
+
+        group_filled = _fill_saved_with_mean(group, saved_mask)
+        scale, zero = _get_scale_zero_per_row(group_filled, n_bits, zero_point)
+        group_q = _quantize_dequantize_with_scale_zero(
+            group, scale, zero, n_bits, zero_point
+        )
+        saved_f = saved_mask.float()
+        group_merged = group_q * (1 - saved_f) + group * saved_f
+        result[:, j : j + g] = group_merged
+
+    return result
