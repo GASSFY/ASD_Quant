@@ -1,6 +1,6 @@
 # ASDQ
 
-ASDQ: Activation-aware Statistical sensitivity driven Quantization for multimodal large models.
+ASDQ: ASD Quantization for multimodal large models.
 
 本仓库为多模态大模型量化方法 ASDQ 的代码实现，当前为**基础架构阶段**：支持加载模型与 COCO 校准数据，量化流程后续迭代加入。
 

@@ -8,7 +8,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 setup(
     name="asdq",
     version="0.1.0",
-    description="ASDQ: Activation-aware Statistical sensitivity driven Quantization for multimodal large models",
+    description="ASDQ: ASD Quantization for multimodal large models",
     author="ASDQ",
     packages=setuptools.find_packages(),
     license="MIT",
