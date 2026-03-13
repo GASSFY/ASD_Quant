@@ -439,18 +439,18 @@ class LLaVA_onevision(BaseModel):
         vision_mask = vision_sel
         answer_mask = (labels != -100) # ignore token id
 
-        prompt_inputs = {
-            "inputs_embeds": input_embeds
-        }
-
-        prompt_kwargs = {
+        forward_kwargs = {
+            "inputs_embeds": input_embeds,
             "labels": labels,
             "attention_mask": attention_mask,
+        }
+
+        metadata = {
             "vision_mask": vision_mask,
             "caption_mask": answer_mask,
         }
 
-        return prompt_inputs, prompt_kwargs
+        return forward_kwargs, metadata
 
 
     def pad_sequence(self, input_ids, batch_first, padding_value):

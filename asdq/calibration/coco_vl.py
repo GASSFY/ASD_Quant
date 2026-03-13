@@ -64,8 +64,8 @@ def get_multimodal_calib_dataset(
     if few_shot_format and interleave_format:
         raise ValueError('You cannot specify both few_shot_format and interleave_format at the same time!')
 
-    all_prompt_inputs = []
-    all_prompt_kwargs = []
+    all_forward_kwargs = []
+    all_metadata = []
 
     for start in range(0, len(data_list), calib_batch_size):
         batch = data_list[start : start + calib_batch_size]
@@ -93,8 +93,8 @@ def get_multimodal_calib_dataset(
                     break
             examples = model.interleave_data_samples(examples, pure_text=samples)
 
-        p_in, p_kw = model.generate_input(examples)
-        all_prompt_inputs.append(p_in)
-        all_prompt_kwargs.append(p_kw)
+        fwd_kw, meta = model.generate_input(examples)
+        all_forward_kwargs.append(fwd_kw)
+        all_metadata.append(meta)
 
-    return all_prompt_inputs, all_prompt_kwargs
+    return all_forward_kwargs, all_metadata
