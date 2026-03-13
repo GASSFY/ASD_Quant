@@ -60,10 +60,15 @@ def collect_hessian_diag(
     try:
         for kwargs in forward_kwargs_list:
             if device is not None:
-                for k, v in kwargs.items():
-                    if isinstance(v, torch.Tensor) and v.device.type != torch.device(device).type:
-                        kwargs[k] = v.to(device)
-            forward_fn(**kwargs)
+                batch = {
+                    k: v.to(device) if isinstance(v, torch.Tensor) else v
+                    for k, v in kwargs.items()
+                }
+            else:
+                batch = kwargs
+            forward_fn(**batch)
+            del batch
+            torch.cuda.empty_cache()
     finally:
         for h in handles:
             h.remove()

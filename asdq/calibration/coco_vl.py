@@ -94,6 +94,15 @@ def get_multimodal_calib_dataset(
             examples = model.interleave_data_samples(examples, pure_text=samples)
 
         fwd_kw, meta = model.generate_input(examples)
+
+        for k, v in fwd_kw.items():
+            if isinstance(v, torch.Tensor):
+                fwd_kw[k] = v.cpu()
+        for k, v in meta.items():
+            if isinstance(v, torch.Tensor):
+                meta[k] = v.cpu()
+        torch.cuda.empty_cache()
+
         all_forward_kwargs.append(fwd_kw)
         all_metadata.append(meta)
 
