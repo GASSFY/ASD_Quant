@@ -21,6 +21,7 @@ def get_multimodal_calib_dataset(
     interleave_format=False,
     text_data_path=None,
     shuffle=True,
+    calib_batch_size=8,
 ):
     if data_path.endswith(".jsonl"):
         dataset = []
@@ -60,37 +61,40 @@ def get_multimodal_calib_dataset(
         data_dict = model.preprocess_data(images, data_item)
         data_list.append(data_dict)
 
-    examples = model.data_collator(data_list)
-
     if few_shot_format and interleave_format:
         raise ValueError('You cannot specify both few_shot_format and interleave_format at the same time!')
 
-    if few_shot_format:
-        examples = model.few_shot_data_samples(examples)
-    if interleave_format:
-        if not text_data_path:
-            dataset = load_dataset("mit-han-lab/pile-val-backup", split="validation")
-        else:
-            dataset = load_dataset(data_path, split="validation")
-        if shuffle:
-            dataset = dataset.shuffle(seed=42)
-        samples = []
-        n_run = 0
-        for data in dataset:
-            line = data["text"].strip()
-            line_encoded = model.tokenizer.encode(line)
+    all_prompt_inputs = []
+    all_prompt_kwargs = []
 
-            if len(line_encoded) > 512:
-                sample = torch.tensor(line_encoded[:512])
-                samples.append(sample)
-                n_run += 1
+    for start in range(0, len(data_list), calib_batch_size):
+        batch = data_list[start : start + calib_batch_size]
+        examples = model.data_collator(batch)
 
-            if n_run == 128:
-                break
-        pure_text = samples
+        if few_shot_format:
+            examples = model.few_shot_data_samples(examples)
+        if interleave_format:
+            if not text_data_path:
+                _dataset = load_dataset("mit-han-lab/pile-val-backup", split="validation")
+            else:
+                _dataset = load_dataset(data_path, split="validation")
+            if shuffle:
+                _dataset = _dataset.shuffle(seed=42)
+            samples = []
+            n_run = 0
+            for data in _dataset:
+                line = data["text"].strip()
+                line_encoded = model.tokenizer.encode(line)
+                if len(line_encoded) > 512:
+                    sample = torch.tensor(line_encoded[:512])
+                    samples.append(sample)
+                    n_run += 1
+                if n_run == 128:
+                    break
+            examples = model.interleave_data_samples(examples, pure_text=samples)
 
-        examples = model.interleave_data_samples(examples, pure_text=pure_text)
+        p_in, p_kw = model.generate_input(examples)
+        all_prompt_inputs.append(p_in)
+        all_prompt_kwargs.append(p_kw)
 
-    prompt_inputs, prompt_kwargs = model.generate_input(examples)
-
-    return prompt_inputs, prompt_kwargs
+    return all_prompt_inputs, all_prompt_kwargs

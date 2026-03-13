@@ -107,10 +107,10 @@ def _run_single(args: argparse.Namespace) -> None:
             print(f"[ASDQ] Loaded quantized state from {args.scale_path}")
         return
 
-    # Load calibration data
-    prompt_inputs, prompt_kwargs = None, None
+    # Load calibration data (returned as lists of mini-batches)
+    prompt_inputs_list, prompt_kwargs_list = None, None
     if args.calib_data == "coco" and args.data_path and args.image_folder:
-        prompt_inputs, prompt_kwargs = get_multimodal_calib_dataset(
+        prompt_inputs_list, prompt_kwargs_list = get_multimodal_calib_dataset(
             data_path=args.data_path,
             image_folder=args.image_folder,
             model=process_model,
@@ -119,7 +119,7 @@ def _run_single(args: argparse.Namespace) -> None:
             interleave_format=args.interleave_format,
             text_data_path=args.text_data_path or None,
         )
-        print("[ASDQ] Calibration data loaded.")
+        print(f"[ASDQ] Calibration data loaded ({len(prompt_inputs_list)} mini-batches).")
 
     # Move model to GPU
     if hasattr(process_model, "to_cuda"):
@@ -129,13 +129,15 @@ def _run_single(args: argparse.Namespace) -> None:
 
     # ASD mixed precision: collect Hessian diag → importance → global ASD ranking
     high_precision_columns = None
-    if getattr(args, "asd_mixed_precision", True) and prompt_inputs is not None and prompt_kwargs is not None:
-        forward_kwargs = {**prompt_inputs, **prompt_kwargs}
+    if getattr(args, "asd_mixed_precision", True) and prompt_inputs_list is not None:
+        forward_kwargs_all = [
+            {**p_in, **p_kw} for p_in, p_kw in zip(prompt_inputs_list, prompt_kwargs_list)
+        ]
         device = next(process_model.model.parameters()).device
         hessian_diag = collect_hessian_diag(
             process_model.model,
             process_model.forward,
-            [forward_kwargs],
+            forward_kwargs_all,
             device=device,
         )
         print(f"[ASDQ] Hessian diag collected for {len(hessian_diag)} layers.")

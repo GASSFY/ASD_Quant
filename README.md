@@ -23,6 +23,11 @@ pip install -e .
 # 4. 安装 lmms-eval（用于模型加载与评估）
 pip install lmms-eval
 ```
+# 还有下面这段
+cd /root/autodl-tmp
+git clone https://github.com/LLaVA-VL/LLaVA-NeXT.git
+cd LLaVA-NeXT
+pip install -e .
 
 ### 数据与模型准备
 
