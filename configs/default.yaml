@@ -1,14 +1,12 @@
 # =============================================================================
-# ASDQ 默认配置（中文注释，便于切换不同量化方案并对比结果）
+# ASDQ 默认配置
 # =============================================================================
 # 使用方式：python main_quant.py --config configs/default.yaml
 #          python main_eval.py --config configs/default.yaml
-# 可通过修改本文件或 CLI 覆盖任意项以检验不同方案。
 # =============================================================================
 
 # ----- 模型 -----
 model: llava_onevision
-# 模型参数字符串，如 pretrained=lmms-lab/llava-onevision-qwen2-7b-ov,dtype=float16
 model_args: "pretrained=your/model-name"
 batch_size: "1"
 device: null
@@ -16,61 +14,43 @@ device: null
 # ----- 校准数据（量化时使用） -----
 calib_data: coco
 n_samples: 128
-# COCO 格式 JSON/JSONL 路径
 data_path: ""
-# 图像目录，与 data_path 中 image 字段拼接
 image_folder: ""
 interleave_format: false
 few_shot_format: false
 text_data_path: ""
 
-# ----- ASD 指标（K、Ψ 计算方案，用于后续敏感通道/混合精度） -----
-# 预设: default=K2+Psi1, max_max=K1+Psi2, mean_max=K2+Psi2；为 null 时用 asd_k_method/psi_method
-asd_preset: default
-# 可选，覆盖预设：K 取 mean|max|l2
-asd_k_method: null
-# 可选，覆盖预设：Ψ 取 mean|max|zscore
-asd_psi_method: null
-# 可选：ASD = theta1*K + theta2*Psi，默认 0.5/0.5
-asd_theta1: 0.5
-asd_theta2: 0.5
-# 是否将 K、Ψ 归一化到 [0,1] 再合并
+# ----- ASD 显著性参数 -----
+# ASD = theta1 * K_normalized + theta2 * Psi_normalized
+# K = importance_c = ||W[:, c]||^2 * diag(H)_c（跨层可比的绝对显著性）
+# Psi = z-score of importance within layer（层内相对突出度）
+asd_theta1: 0.8
+asd_theta2: 0.2
+# 是否将 K、Psi 归一化到 [0,1] 再合并（强烈建议开启）
 asd_normalize: true
 
-# ----- 混合精度（ASD 驱动：全局比例 + 高/低比特） -----
-# 全模型最多该比例的「输入通道」享受高精度（所有层一起排序，不是每层 10%）
+# ----- 混合精度（ASD 驱动：全局比例 + SpQR 风格） -----
+# 是否启用混合精度（启用时需校准数据以收集 Hessian 对角）
+asd_mixed_precision: true
+# 全模型最多该比例的输入通道保留原始精度（所有层一起排序，不是每层各 10%）
 asd_high_precision_ratio: 0.1
-# 高 ASD 通道对应权重列使用的比特；低 ASD 使用 low
-asd_high_w_bit: 8
+# 非 outlier 通道使用的量化比特数
 asd_low_w_bit: 4
-# 是否启用混合精度（true 时需有校准激活以算 ASD，并做全局排序）
-asd_mixed_precision: false
 
 # ----- 量化参数 -----
-# 是否执行量化流程并保存（True=跑校准+量化+写 scale_path，False=仅加载已有 scale_path 时用）
 run_process: true
-# 量化结果保存路径：run_process 时写入 state_dict 或 scales，评估时从此加载
 scale_path: "scale_cache/asdq_llava_7b_w4.pt"
-# 权重量化比特数
+# 权重量化比特数（未启用混合精度时的统一比特数）
 w_bit: 4
-# 激活量化比特数（若做 weight_activation 量化）
-a_bit: 16
-# 权重量化分组大小，-1 表示 per-tensor
+# 分组大小（SpQR 中一行 x w_group 列为一组）
 w_group: 128
-# 是否伪量化（True=在内存中模拟量化，用于评估）
 pseudo_quant: true
 
 # ----- 评估参数（main_eval.py 使用） -----
-# lmms-eval 任务列表，逗号分隔，如 mmmu_val 或 mme,mmb
 tasks: "mmmu_val"
-# 每任务最多跑多少样本，null 表示全量
 limit: null
-# 评估结果输出目录或文件
 output_path: "eval_results"
-# 随机种子（可选）
 seed: "0,1234,1234,1234"
-# 生成参数（可选）
 gen_kwargs: ""
-# 是否记录每条样本的预测（可选）
 log_samples: false
 verbosity: "INFO"

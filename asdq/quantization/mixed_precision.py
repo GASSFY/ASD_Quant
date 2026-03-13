@@ -1,43 +1,80 @@
 """
-混合精度：基于全局 ASD 排序 + 全局比例上限。
+Mixed precision: Hessian-based global ASD ranking + top-ratio column selection.
 
-共识：
-- 对所有要量化的层，用校准激活算每通道 ASD → (层, 通道, ASD)。
-- 全模型所有通道的 ASD 一起排序，取前 ratio（如 0.1）标为「高精度」。
-- 量化时：高精度通道对应权重列用 high_w_bit，其余用 low_w_bit。
+Flow:
+  1. For each Linear layer, compute importance_c = ||W[:, c]||^2 * diag(H)_c
+  2. Global normalize K = importance / global_max  →  [0, 1]
+  3. Per-layer z-score → Psi, then global normalize Psi / global_max_psi → [0, 1]
+  4. ASD = theta1 * K_normalized + theta2 * Psi_normalized
+  5. Global sort, take top ratio as high_precision_columns
 """
 from __future__ import annotations
 
-from typing import Any
+from collections import defaultdict
 
 import torch
+import torch.nn as nn
 
-from asdq.metrics import compute_ASD, get_ASD_kwargs
+from asdq.metrics.asd import compute_importance, compute_Psi
+
+_EPS = 1e-8
 
 
 def compute_global_asd_list(
-    layer_activations: dict[str, torch.Tensor],
-    asd_kwargs: dict[str, Any] | None = None,
+    model: nn.Module,
+    hessian_diag: dict[str, torch.Tensor],
+    theta1: float = 0.8,
+    theta2: float = 0.2,
 ) -> list[tuple[str, int, float]]:
     """
-    对所有层的激活算每通道 ASD，汇总为全局列表。
+    Compute per-channel ASD scores across all layers using Hessian-based importance.
 
-    layer_activations: 层名 -> 激活张量 [N, C]，C 为输入通道数。
-    asd_kwargs: 传给 compute_ASD 的参数（theta1, theta2, k_method, psi_method, normalize 等）。
+    model: root model (with .model.layers).
+    hessian_diag: {layer_key: diag_H tensor [C]} from collect_hessian_diag.
+    theta1, theta2: weights for K (absolute) and Psi (relative).
 
     Returns:
-        [(layer_key, channel_idx, asd_value), ...]，未排序。
+        [(layer_key, channel_idx, asd_value), ...], unsorted.
     """
-    asd_kwargs = asd_kwargs or {}
-    out: list[tuple[str, int, float]] = []
-    for layer_key, x in layer_activations.items():
-        if x.numel() == 0 or x.shape[-1] == 0:
-            continue
-        x_2d = x.float().view(-1, x.shape[-1])
-        asd = compute_ASD(x_2d, **asd_kwargs)  # [C]
+    from asdq.quantization.quantize import get_blocks, get_named_linears, _linear_layer_key
+
+    # Step 1: compute raw importance for every (layer, channel)
+    layer_importance: dict[str, torch.Tensor] = {}
+    layers = get_blocks(model)
+    for i in range(len(layers)):
+        for name, linear in get_named_linears(layers[i]).items():
+            key = _linear_layer_key(i, name)
+            if key not in hessian_diag:
+                continue
+            importance = compute_importance(linear.weight.data, hessian_diag[key])
+            layer_importance[key] = importance
+
+    if not layer_importance:
+        return []
+
+    # Step 2: global normalize K = importance / global_max → [0, 1]
+    global_max = max(imp.max().item() for imp in layer_importance.values())
+    global_max = max(global_max, _EPS)
+
+    # Step 3: per-layer z-score → Psi, collect all Psi values
+    layer_psi: dict[str, torch.Tensor] = {}
+    for key, importance in layer_importance.items():
+        layer_psi[key] = compute_Psi(importance, method="zscore")
+
+    # Global normalize Psi → [0, 1]
+    global_max_psi = max(psi.max().item() for psi in layer_psi.values())
+    global_max_psi = max(global_max_psi, _EPS)
+
+    # Step 4: ASD = theta1 * K_norm + theta2 * Psi_norm
+    result: list[tuple[str, int, float]] = []
+    for key in layer_importance:
+        K_norm = layer_importance[key] / global_max
+        Psi_norm = layer_psi[key] / global_max_psi
+        asd = theta1 * K_norm + theta2 * Psi_norm
         for c in range(asd.shape[0]):
-            out.append((layer_key, c, asd[c].item()))
-    return out
+            result.append((key, c, asd[c].item()))
+
+    return result
 
 
 def select_high_precision_columns(
@@ -45,11 +82,11 @@ def select_high_precision_columns(
     ratio: float,
 ) -> set[tuple[str, int]]:
     """
-    按 ASD 从高到低排序，取前 ratio 比例的 (layer_key, channel_idx) 为高精度。
+    Sort by ASD descending, take top ratio fraction as high-precision columns.
 
-    ratio: 全模型高精度通道比例，例如 0.1 表示最多 10% 通道高精度。
+    ratio: global fraction, e.g. 0.1 means top 10% of all channels across all layers.
     Returns:
-        set of (layer_key, channel_idx) 享受高精度。
+        set of (layer_key, channel_idx) that keep original float precision.
     """
     if ratio <= 0 or not global_asd_list:
         return set()

@@ -1,4 +1,4 @@
-"""Minimal RTN-style weight pseudo quantization for LLaVA-like models."""
+"""Weight pseudo quantization for LLaVA-like models (SpQR-style mixed precision)."""
 from __future__ import annotations
 
 from typing import Set, Tuple
@@ -33,7 +33,7 @@ def get_blocks(model):
 
 
 def _linear_layer_key(block_idx: int, linear_name: str) -> str:
-    """与 mixed_precision 中 layer_activations 的 key 一致，便于查找高精度列。"""
+    """Canonical key for a Linear layer, shared by hessian_collector and mixed_precision."""
     return f"layers.{block_idx}.{linear_name}"
 
 
@@ -44,15 +44,16 @@ def pseudo_quantize_model_weight(
     q_group_size: int = -1,
     zero_point: bool = True,
     high_precision_columns: Set[Tuple[str, int]] | None = None,
-    high_w_bit: int = 8,
     low_w_bit: int = 4,
 ):
     """
     In-place pseudo quantize Linear weights in model (language blocks only).
 
-    若提供 high_precision_columns，则采用 SpQR 风格混合精度：
-    分组 = 一行×一坨列（q_group_size）；组内保存精度列剔除后用剩余位置算 scale/zero（填均值再 fit），
-    量化后保存位置用原权重重写；输出权重已是「量化部分 + outlier」合并结果，推理时直接 matmul 即可。
+    If high_precision_columns is provided, uses SpQR-style mixed precision:
+    group = one row x q_group_size columns; outlier columns are excluded when
+    fitting scale/zero (replaced by row mean), then original float values are
+    written back after quantization. The output weight is the merged result of
+    "quantized part + outlier originals", so inference is a plain matmul.
     """
     layers = get_blocks(model)
     q_config = {"zero_point": zero_point, "q_group_size": q_group_size}
@@ -63,7 +64,7 @@ def pseudo_quantize_model_weight(
     for i in tqdm(range(len(layers)), desc="pseudo weight quantization..."):
         named_linears = get_named_linears(layers[i])
         for n, m in named_linears.items():
-            w = m.weight.data  # (out_features, in_features)
+            w = m.weight.data
             if use_mixed and high_precision_columns is not None:
                 key = _linear_layer_key(i, n)
                 m.weight.data = pseudo_quantize_weight_spqr_style(

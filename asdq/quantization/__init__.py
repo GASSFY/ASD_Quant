@@ -3,7 +3,7 @@ from .quant_funcs import (
     pseudo_quantize_weight_per_column,
     pseudo_quantize_weight_spqr_style,
 )
-from .rtn import pseudo_quantize_model_weight
+from .quantize import pseudo_quantize_model_weight
 from .mixed_precision import (
     compute_global_asd_list,
     select_high_precision_columns,

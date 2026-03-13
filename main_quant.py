@@ -1,6 +1,7 @@
 """
-ASDQ 量化入口：加载模型与校准数据，执行 RTN 权重量化并保存，供评估加载。
-配置可从 yaml 读取（含 ASD 与量化参数）。
+ASDQ quantization entry point: load model and calibration data, collect Hessian
+diagonal, compute ASD-based mixed precision column selection, run SpQR-style
+pseudo quantization, and save the merged weights.
 """
 import argparse
 import os
@@ -16,9 +17,9 @@ from lmms_eval.models import get_model
 
 from asdq.models import get_process_model
 from asdq.calibration.coco_vl import get_multimodal_calib_dataset
-from asdq.calibration.activation_collector import collect_layer_activations
+from asdq.calibration.hessian_collector import collect_hessian_diag
 from asdq.metrics import asd_kwargs_from_config
-from asdq.quantization.rtn import pseudo_quantize_model_weight
+from asdq.quantization.quantize import pseudo_quantize_model_weight
 from asdq.quantization.mixed_precision import (
     compute_global_asd_list,
     select_high_precision_columns,
@@ -28,7 +29,7 @@ from asdq.quantization.mixed_precision import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         formatter_class=argparse.RawTextHelpFormatter,
-        description="ASDQ: run quantization (calib + RTN) and save to scale_path.",
+        description="ASDQ: calibrate, compute ASD, quantize (SpQR-style), and save.",
     )
     parser.add_argument("--config", default="", help="Path to yaml config (overrides CLI)")
     parser.add_argument("--model", default="llava_onevision")
@@ -42,23 +43,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--interleave_format", action="store_true")
     parser.add_argument("--few_shot_format", action="store_true")
     parser.add_argument("--text_data_path", default="", type=str)
-    # quant
-    parser.add_argument("--run_process", action="store_true", help="Run quant and save; if False, only load model (e.g. for eval)")
-    parser.add_argument("--scale_path", default=None, type=str, help="Save quant state_dict here when run_process; load here in eval")
+    # quantization
+    parser.add_argument("--run_process", action="store_true", help="Run quant and save")
+    parser.add_argument("--scale_path", default=None, type=str, help="Path to save/load quantized state_dict")
     parser.add_argument("--w_bit", type=int, default=4)
     parser.add_argument("--w_group", type=int, default=128)
     parser.add_argument("--pseudo_quant", action="store_true", default=True)
-    # ASD (optional, for future use)
-    parser.add_argument("--asd_preset", default="default", type=str)
-    parser.add_argument("--asd_k_method", default=None)
-    parser.add_argument("--asd_psi_method", default=None)
-    parser.add_argument("--asd_theta1", type=float, default=0.5)
-    parser.add_argument("--asd_theta2", type=float, default=0.5)
+    # ASD mixed precision
+    parser.add_argument("--asd_mixed_precision", action="store_true", default=True)
+    parser.add_argument("--asd_theta1", type=float, default=0.8)
+    parser.add_argument("--asd_theta2", type=float, default=0.2)
     parser.add_argument("--asd_normalize", type=bool, default=True)
-    # 混合精度：全局 ASD 排序 + 比例上限
-    parser.add_argument("--asd_mixed_precision", action="store_true", default=False)
     parser.add_argument("--asd_high_precision_ratio", type=float, default=0.1)
-    parser.add_argument("--asd_high_w_bit", type=int, default=8)
     parser.add_argument("--asd_low_w_bit", type=int, default=4)
     args = parser.parse_args()
     return args
@@ -102,7 +98,6 @@ def _run_single(args: argparse.Namespace) -> None:
     )
 
     if not args.run_process:
-        # Only load existing scale_path (used by eval when quant was already run)
         if args.scale_path and os.path.exists(args.scale_path):
             state = torch.load(args.scale_path, map_location="cpu", weights_only=True)
             if isinstance(state, dict) and "state_dict" in state:
@@ -126,30 +121,34 @@ def _run_single(args: argparse.Namespace) -> None:
         )
         print("[ASDQ] Calibration data loaded.")
 
-    # RTN weight pseudo quantization (on GPU if available)
+    # Move model to GPU
     if hasattr(process_model, "to_cuda"):
         process_model.to_cuda()
     elif hasattr(process_model.model, "cuda"):
         process_model.model.cuda()
 
+    # ASD mixed precision: collect Hessian diag → importance → global ASD ranking
     high_precision_columns = None
-    if getattr(args, "asd_mixed_precision", False) and prompt_inputs is not None and prompt_kwargs is not None:
-        # 第一步：收集每层激活
+    if getattr(args, "asd_mixed_precision", True) and prompt_inputs is not None and prompt_kwargs is not None:
         forward_kwargs = {**prompt_inputs, **prompt_kwargs}
         device = next(process_model.model.parameters()).device
-        layer_activations = collect_layer_activations(
+        hessian_diag = collect_hessian_diag(
             process_model.model,
             process_model.forward,
             [forward_kwargs],
             device=device,
         )
-        # 第二步：全模型 ASD 排序，取前 ratio 为高精度
-        asd_kwargs = asd_kwargs_from_config(vars(args))
-        global_asd_list = compute_global_asd_list(layer_activations, asd_kwargs)
+        print(f"[ASDQ] Hessian diag collected for {len(hessian_diag)} layers.")
+
+        asd_kw = asd_kwargs_from_config(vars(args))
+        global_asd_list = compute_global_asd_list(
+            process_model.model, hessian_diag, **asd_kw,
+        )
         ratio = getattr(args, "asd_high_precision_ratio", 0.1)
         high_precision_columns = select_high_precision_columns(global_asd_list, ratio)
         print(f"[ASDQ] Mixed precision: {len(high_precision_columns)} high-precision columns (ratio={ratio}).")
 
+    # Pseudo quantization
     if args.pseudo_quant:
         if high_precision_columns is not None:
             pseudo_quantize_model_weight(
@@ -158,7 +157,6 @@ def _run_single(args: argparse.Namespace) -> None:
                 q_group_size=args.w_group,
                 zero_point=True,
                 high_precision_columns=high_precision_columns,
-                high_w_bit=getattr(args, "asd_high_w_bit", 8),
                 low_w_bit=getattr(args, "asd_low_w_bit", 4),
             )
             print("[ASDQ] Pseudo quantization applied (ASD mixed precision).")
@@ -169,9 +167,9 @@ def _run_single(args: argparse.Namespace) -> None:
                 q_group_size=args.w_group,
                 zero_point=True,
             )
-            print(f"[ASDQ] Pseudo quantization applied (w_bit={args.w_bit}).")
+            print(f"[ASDQ] Pseudo quantization applied (uniform w_bit={args.w_bit}).")
 
-    # Save state_dict for eval
+    # Save state_dict
     if args.scale_path:
         os.makedirs(os.path.dirname(args.scale_path) or ".", exist_ok=True)
         state_dict = lm._model.state_dict()
