@@ -30,6 +30,70 @@ def _handle_non_serializable(o):
     return str(o)
 
 
+def _append_results_md(md_path: str, args: argparse.Namespace, results: dict) -> None:
+    """Append evaluation results to a markdown file."""
+    theta1 = getattr(args, "asd_theta1", "N/A")
+    theta2 = getattr(args, "asd_theta2", "N/A")
+    ratio = getattr(args, "asd_high_precision_ratio", "N/A")
+    w_bit = getattr(args, "w_bit", getattr(args, "asd_low_w_bit", "N/A"))
+
+    lines: list[str] = []
+    lines.append(f"\n## theta1={theta1}, theta2={theta2}, ratio={ratio}, w_bit={w_bit}\n")
+
+    # Main metrics table from lmms-eval
+    table_str = evaluator.make_table(results)
+    if table_str:
+        lines.append("```")
+        lines.append(table_str.strip())
+        lines.append("```\n")
+
+    # Group-level table if available
+    if "groups" in results:
+        groups_table = evaluator.make_table(results, "groups")
+        if groups_table:
+            lines.append("```")
+            lines.append(groups_table.strip())
+            lines.append("```\n")
+
+    # Per-subject details from results["results"] or logs
+    raw_results = results.get("results", {})
+    for task_name, task_metrics in raw_results.items():
+        if not isinstance(task_metrics, dict):
+            continue
+        for metric_key, metric_val in task_metrics.items():
+            if "acc" in metric_key and isinstance(metric_val, (int, float)):
+                lines.append(f"- **{task_name}** {metric_key} = {metric_val:.5f}")
+
+    # If logs contain per-subject info, extract and write it
+    logs = results.get("logs", {})
+    for task_name, task_logs in logs.items():
+        if not isinstance(task_logs, list) or not task_logs:
+            continue
+        first = task_logs[0]
+        if isinstance(first, dict) and "mmmu_acc" in first:
+            from collections import defaultdict
+            subject_stats = defaultdict(lambda: {"correct": 0, "total": 0})
+            for entry in task_logs:
+                subj = entry.get("mmmu_acc", {}).get("subject", "Unknown")
+                score = entry.get("mmmu_acc", {}).get("score", 0)
+                subject_stats[subj]["total"] += 1
+                subject_stats[subj]["correct"] += score
+            if subject_stats:
+                lines.append("\n| Subject | Num | Acc |")
+                lines.append("|---------|-----|-----|")
+                for subj in sorted(subject_stats.keys()):
+                    s = subject_stats[subj]
+                    acc = s["correct"] / s["total"] if s["total"] else 0
+                    lines.append(f"| {subj} | {s['total']} | {acc:.5f} |")
+
+    lines.append("\n---\n")
+
+    os.makedirs(os.path.dirname(md_path) or ".", exist_ok=True)
+    with open(md_path, "a", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"[ASDQ] Results appended to {md_path}")
+
+
 def parse_eval_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         formatter_class=argparse.RawTextHelpFormatter,
@@ -53,17 +117,16 @@ def parse_eval_args() -> argparse.Namespace:
     parser.add_argument("--verbosity", type=str, default="INFO")
     parser.add_argument("--include_path", type=str, default=None)
     parser.add_argument("--seed", type=str, default="0,1234,1234,1234")
-    # 量化模型：从此路径加载已量化的 state_dict
     parser.add_argument("--scale_path", default=None, type=str, help="Path to saved quant state_dict (from main_quant.py)")
     parser.add_argument("--pseudo_quant", action="store_true", default=False, help="If True and scale_path set, load quant weights")
+    parser.add_argument("--results_md", default=None, type=str, help="Path to markdown file for appending results")
     args = parser.parse_args()
     return args
 
 
 def _apply_config(args: argparse.Namespace, config: dict) -> None:
     for k, v in config.items():
-        if hasattr(args, k):
-            setattr(args, k, v)
+        setattr(args, k, v)
 
 
 def _parse_seed(seed_str: str) -> tuple:
@@ -158,6 +221,9 @@ def run_eval(args: argparse.Namespace) -> dict | None:
             with open(out_file, "w", encoding="utf-8") as f:
                 json.dump(results, f, indent=2, default=_handle_non_serializable)
             print(f"Results saved to {out_file}")
+        md_path = getattr(args, "results_md", None)
+        if md_path:
+            _append_results_md(md_path, args, results)
     return results
 
 
