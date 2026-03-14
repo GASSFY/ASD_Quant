@@ -64,6 +64,7 @@ def pseudo_quantize_model_weight(
     for i in tqdm(range(len(layers)), desc="pseudo weight quantization..."):
         named_linears = get_named_linears(layers[i])
         for n, m in named_linears.items():
+            print(f"  [Block {i}] Quantizing {n} {tuple(m.weight.shape)}", flush=True)
             w = m.weight.data
             if use_mixed and high_precision_columns is not None:
                 key = _linear_layer_key(i, n)

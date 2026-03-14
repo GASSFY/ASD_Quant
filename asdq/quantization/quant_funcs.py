@@ -131,17 +131,18 @@ def _fill_saved_with_mean(
     """
     组内把「保存精度」位置用该行非保存位置的均值填上（SpQR 方式 1）。
     group (out_f, g), saved_mask (out_f, g) bool，True = 保存精度。
+
+    saved_mask 是按列定义的（同一列所有行相同），因此可以向量化。
     """
-    out_f, g = group.shape
+    col_mask = saved_mask[0]  # (g,) — 列级 mask，所有行一致
+    not_saved = ~col_mask
+    if not_saved.all():
+        return group.clone()
+    if not not_saved.any():
+        return group.clone()
+    row_mean = group[:, not_saved].mean(dim=1, keepdim=True)  # (out_f, 1)
     group_filled = group.clone()
-    for i in range(out_f):
-        row = group[i]
-        mask_row = saved_mask[i]
-        non_saved = row[~mask_row]
-        if non_saved.numel() == 0:
-            continue
-        mean_val = non_saved.mean().item()
-        group_filled[i, mask_row] = mean_val
+    group_filled[:, col_mask] = row_mean.expand(-1, int(col_mask.sum()))
     return group_filled
 
 
@@ -165,14 +166,15 @@ def pseudo_quantize_weight_spqr_style(
     result = weight.clone()
     w = weight.float()
 
+    hp_col_mask = torch.zeros(in_f, dtype=torch.bool)
+    for col_idx in range(in_f):
+        if (layer_key, col_idx) in high_precision_columns:
+            hp_col_mask[col_idx] = True
+
     for j in range(0, in_f, q_group_size):
         g = min(q_group_size, in_f - j)
         group = w[:, j : j + g]
-        saved_mask = torch.zeros_like(group, dtype=torch.bool)
-        for col_local in range(g):
-            col_idx = j + col_local
-            if (layer_key, col_idx) in high_precision_columns:
-                saved_mask[:, col_local] = True
+        saved_mask = hp_col_mask[j : j + g].unsqueeze(0).expand(out_f, -1)
 
         group_filled = _fill_saved_with_mean(group, saved_mask)
         scale, zero = _get_scale_zero_per_row(group_filled, n_bits, zero_point)
