@@ -40,7 +40,7 @@ Thumbs.db
 # Project
 *.log
 scale_cache/
-configs/
+configs/*
 eval_results/
 
 # LLAVA module

@@ -1,6 +1,6 @@
 #!/bin/bash
 # ASDQ Ablation Study: test different theta1/theta2/ratio combinations
-# Usage: cd /path/to/ASD_Quant && bash scripts/run_ablation.sh
+# Usage: cd /path/to/ASD_Quant && bash run_ablation.sh
 
 set -e
 
@@ -56,15 +56,26 @@ with open('${CONFIG}', 'w') as f:
 print(f'[Ablation] Updated config: theta1={${THETA1}}, theta2={${THETA2}}, ratio={${RATIO}}')
 "
 
-    # Step 2: Quantize
+    # Step 2: Quantize (with timing)
     echo "[Ablation] Running quantization..."
+    QUANT_START=$(date +%s)
     python3 main_quant.py --config "$CONFIG" 2>&1 | tee "${LOG_FILE}"
+    QUANT_END=$(date +%s)
+    QUANT_TIME=$((QUANT_END - QUANT_START))
+    QUANT_MIN=$((QUANT_TIME / 60))
+    QUANT_SEC=$((QUANT_TIME % 60))
+    echo "[Ablation] Quantization finished in ${QUANT_MIN}m ${QUANT_SEC}s (${QUANT_TIME}s total)"
 
     # Step 3: Evaluate (results saved to markdown + console log)
     echo "[Ablation] Running evaluation..."
     python3 main_eval.py --config "$CONFIG" --results_md "$RESULTS_MD" 2>&1 | tee -a "${LOG_FILE}"
 
-    # Step 4: Delete .pt file to save disk space
+    # Step 4: Append quantization time to markdown results
+    echo "" >> "$RESULTS_MD"
+    echo "> Quantization time: **${QUANT_MIN}m ${QUANT_SEC}s** (${QUANT_TIME}s)" >> "$RESULTS_MD"
+    echo "" >> "$RESULTS_MD"
+
+    # Step 5: Delete .pt file to save disk space
     if [ -f "$SCALE_PATH" ]; then
         rm -f "$SCALE_PATH"
         echo "[Ablation] Deleted ${SCALE_PATH} to save disk space."
