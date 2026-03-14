@@ -121,21 +121,14 @@ def _run_single(args: argparse.Namespace) -> None:
         )
         print(f"[ASDQ] Calibration data loaded ({len(forward_kwargs_list)} mini-batches).")
 
-    # Move model to GPU
-    if hasattr(process_model, "to_cuda"):
-        process_model.to_cuda()
-    elif hasattr(process_model.model, "cuda"):
-        process_model.model.cuda()
-
     # ASD mixed precision: collect Hessian diag → importance → global ASD ranking
+    # collect_hessian_diag uses MBQ-style Catcher + layer-by-layer forward
+    # and manages to_cuda / to_cpu internally to avoid OOM.
     high_precision_columns = None
     if getattr(args, "asd_mixed_precision", True) and forward_kwargs_list is not None:
-        device = next(process_model.model.parameters()).device
         hessian_diag = collect_hessian_diag(
-            process_model.model,
-            process_model.forward,
+            process_model,
             forward_kwargs_list,
-            device=device,
         )
         print(f"[ASDQ] Hessian diag collected for {len(hessian_diag)} layers.")
 
@@ -146,6 +139,12 @@ def _run_single(args: argparse.Namespace) -> None:
         ratio = getattr(args, "asd_high_precision_ratio", 0.1)
         high_precision_columns = select_high_precision_columns(global_asd_list, ratio)
         print(f"[ASDQ] Mixed precision: {len(high_precision_columns)} high-precision columns (ratio={ratio}).")
+
+    # Move model to GPU for quantization
+    if hasattr(process_model, "to_cuda"):
+        process_model.to_cuda()
+    elif hasattr(process_model.model, "cuda"):
+        process_model.model.cuda()
 
     # Pseudo quantization
     if args.pseudo_quant:
