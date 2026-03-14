@@ -101,7 +101,7 @@ def _get_scale_zero_per_row(
     min_int = 0 if zero_point else -(2 ** (n_bits - 1))
     scale = (xmax - xmin).clamp(min=_EPS) / max_int
     zero = (
-        (-torch.round(xmin / scale).clamp(min_int, max_int))
+        (-torch.round(xmin / scale)).clamp(min_int, max_int)
         if zero_point
         else torch.full_like(scale, (max_int + 1) / 2)
     )

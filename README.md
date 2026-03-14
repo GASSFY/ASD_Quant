@@ -29,6 +29,10 @@ git clone https://github.com/LLaVA-VL/LLaVA-NeXT.git
 cd LLaVA-NeXT
 pip install -e .
 
+git clone https://github.com/LSY-noya/lmms-eval.git
+cd lmms-eval
+pip install -e .
+
 ### 数据与模型准备
 
 - **校准数据**：COCO 格式的 JSON/JSONL + 图像目录
