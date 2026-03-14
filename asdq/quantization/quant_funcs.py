@@ -166,7 +166,7 @@ def pseudo_quantize_weight_spqr_style(
     result = weight.clone()
     w = weight.float()
 
-    hp_col_mask = torch.zeros(in_f, dtype=torch.bool)
+    hp_col_mask = torch.zeros(in_f, dtype=torch.bool, device=weight.device)
     for col_idx in range(in_f):
         if (layer_key, col_idx) in high_precision_columns:
             hp_col_mask[col_idx] = True
