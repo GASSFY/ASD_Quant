@@ -39,5 +39,10 @@ Thumbs.db
 
 # Project
 *.log
-scale_path/
-configs/local*.yaml
+scale_cache/
+configs/
+eval_results/
+
+# LLAVA module
+LLaVA-NeXT/
+lmms-eval/
