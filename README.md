@@ -78,63 +78,56 @@ pip install -e .
 
 修改 yaml 后使用 `--config configs/default.yaml` 即可驱动量化或评估，无需改代码。算法细节见 [docs/ASD_AND_MIXED_PRECISION_CONSENSUS.md](docs/ASD_AND_MIXED_PRECISION_CONSENSUS.md)。
 
+**参数来源规则**：使用 `--config` 时，**所有参数以配置文件为准**，命令行不会覆盖；**不使用** `--config` 时，所有参数需在命令行指定（见下方示例）。
+
 ---
 
 ## 三、运行量化
 
-**前提**：在 `configs/default.yaml` 中填写好 `model_args`、`data_path`、`image_folder`、`scale_path`（或通过命令行覆盖）。
+在 `configs/default.yaml` 中填好 `model_args`、`data_path`、`image_folder`、`scale_path` 等，然后：
 
-**场景与命令：**
+```bash
+python main_quant.py --config configs/default.yaml
+```
 
-| 场景 | 命令 |
-|------|------|
-| 使用配置文件默认行为（校准 + 量化 + 保存） | `python main_quant.py --config configs/default.yaml` |
-| 仅加载已有量化权重（不校准、不重新量化） | 在 yaml 中设 `run_process: false` 并设好 `scale_path`，再执行：`python main_quant.py --config configs/default.yaml` |
-| 命令行覆盖数据、模型、输出路径 | `python main_quant.py --config configs/default.yaml --data_path /path/to/coco.json --image_folder /path/to/coco/images --model_args "pretrained=lmms-lab/llava-onevision-qwen2-7b-ov,dtype=float16" --scale_path scale_cache/asdq_7b_w4.pt` |
-| 覆盖校准与量化参数（样本数、高精度比例、分组大小） | `python main_quant.py --config configs/default.yaml --n_samples 256 --asd_high_precision_ratio 0.05 --asd_low_w_bit 4 --w_group 128` |
-| 关闭混合精度（统一 w_bit 量化） | `python main_quant.py --config configs/default.yaml --asd_mixed_precision false --w_bit 4` |
-| 指定设备与 batch | `python main_quant.py --config configs/default.yaml --device cuda:0 --batch_size 2` |
+仅加载已有量化权重（不校准、不重新量化）：在 yaml 中设 `run_process: false` 并设好 `scale_path`，再执行上述命令。
 
-量化流程会自动执行：加载模型与校准数据 → 流式收集 Hessian 对角 → 计算 importance 与 ASD → 全局排序选高精度列 → 分组混合精度量化 → 合并权重保存到 `scale_path`。
+不用 config、全用命令行时，需传入所有必要参数，例如：
+
+```bash
+python main_quant.py --model llava_onevision --model_args "pretrained=MODEL,dtype=float16" --data_path /path/to/coco.json --image_folder /path/to/images --scale_path scale_cache/out.pt --n_samples 128
+```
+
+量化流程：加载模型与校准数据 → 流式收集 Hessian 对角 → 计算 importance 与 ASD → 全局排序选高精度列 → 分组混合精度量化 → 合并权重保存到 `scale_path`。
 
 ---
 
 ## 四、评估
 
-**场景与命令：**
+在 yaml 中设好 `tasks`、`output_path`；评估量化模型时设好 `scale_path`，评估 FP16 时则不设或令其指向不存在的文件。然后：
 
-| 场景 | 命令 |
-|------|------|
-| 评估量化后的模型 | `python main_eval.py --config configs/default.yaml --scale_path scale_cache/asdq_llava_7b_w4.pt --tasks mmmu_val --output_path eval_results` |
-| 评估原始 FP 模型（不加载量化权重） | `python main_eval.py --config configs/default.yaml --tasks mmmu_val --output_path eval_results`（不传 `--scale_path`，但是需要注意的是，default.yaml中也有一个scale_path配置，需要这个配置的路径没有对应的量化文件才行） |
-| 多任务评估 | `python main_eval.py --config configs/default.yaml --scale_path scale_cache/asdq_llava_7b_w4.pt --tasks mmmu_val,mme,mmb --output_path eval_results` |
-| 快速试跑（限制样本数） | `python main_eval.py --config configs/default.yaml --scale_path scale_cache/asdq_llava_7b_w4.pt --tasks mmmu_val --limit 10 --output_path eval_results` |
-| 将结果追加到 Markdown（如消融） | `python main_eval.py --config configs/default.yaml --scale_path scale_cache/asdq_llava_7b_w4.pt --tasks mmmu_val --output_path eval_results --results_md eval_results/ablation_results.md` |
-| 列出可用任务 | `python main_eval.py --config configs/default.yaml --tasks list` |
-| 调试（记录样本、DEBUG 日志） | `python main_eval.py --config configs/default.yaml --scale_path scale_cache/asdq_llava_7b_w4.pt --tasks mmmu_val --log_samples --verbosity DEBUG` |
+```bash
+# 评估量化后的模型（yaml 中 tasks、scale_path、output_path 已配置）
+python main_eval.py --config configs/default.yaml
+
+# 评估 FP16（yaml 中 scale_path 不设或对应文件不存在）
+python main_eval.py --config configs/default.yaml
+```
+
+不用 config 时，所有参数在命令行指定，例如：
+
+```bash
+python main_eval.py --model llava_onevision --model_args "pretrained=MODEL,dtype=float16" --tasks mmmu_val --output_path eval_results
+# 评估量化模型时再加上：--scale_path scale_cache/asdq_llava_7b_w4.pt
+```
+
+列出可用任务可调用 lmms-eval 的 `TaskManager.list_all_tasks()` 或查 lmms-eval 文档。
 
 ---
 
-### 运行命令速查
+### 消融（run_ablation.sh）
 
-**量化（main_quant.py）**
-
-```bash
-python main_quant.py --config configs/default.yaml
-python main_quant.py --config configs/default.yaml --data_path /path/to/coco.json --image_folder /path/to/images --model_args "pretrained=MODEL,dtype=float16" --scale_path scale_cache/out.pt
-python main_quant.py --config configs/default.yaml --asd_mixed_precision false --w_bit 4
-```
-
-**评估（main_eval.py）**
-
-```bash
-python main_eval.py --config configs/default.yaml --scale_path scale_cache/asdq_llava_7b_w4.pt --tasks mmmu_val --output_path eval_results
-python main_eval.py --config configs/default.yaml --tasks mmmu_val --output_path eval_results
-python main_eval.py --config configs/default.yaml --tasks list
-```
-
-**消融（run_ablation.sh）**  
-在项目根目录执行：`bash run_ablation.sh`。脚本会循环修改 default.yaml 的 theta1/theta2/ratio，依次执行「量化 → 评估 → 结果追加到 ablation_results.md → 删除当前 .pt」。
+在项目根目录执行：`bash run_ablation.sh`。脚本会按配置的任务列表（默认 mmmu_val、realworldqa、ocrbench、ai2d）逐任务执行：写 config 的 `tasks` → FP16 基线评估 → 多组 theta1/theta2/ratio 消融（改 yaml → 量化 → 评估 → 结果追加到 ablation_results.md → 删除当前 .pt）。
 
 ---
 

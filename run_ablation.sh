@@ -53,10 +53,21 @@ for TASK in "${TASKS[@]}"; do
     echo "## Task: ${TASK}" >> "$RESULTS_MD"
     echo "" >> "$RESULTS_MD"
 
+    # Set config tasks to current TASK (config drives eval; no CLI override)
+    python3 -c "
+import yaml
+with open('${CONFIG}', 'r') as f:
+    cfg = yaml.safe_load(f)
+cfg['tasks'] = '${TASK}'
+with open('${CONFIG}', 'w') as f:
+    yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+print(f'[Ablation] Set config tasks to ${TASK}')
+"
+
     # ---------- FP16 baseline (no quantization, no .pt loaded) ----------
     echo "[Ablation] Running FP16 baseline for ${TASK}..."
     LOG_FP16="${LOG_DIR}/${TASK}_fp16_baseline.log"
-    python3 main_eval.py --config "$CONFIG" --tasks "$TASK" --results_md "$RESULTS_MD" --output_path eval_results 2>&1 | tee "$LOG_FP16"
+    python3 main_eval.py --config "$CONFIG" --results_md "$RESULTS_MD" --output_path eval_results 2>&1 | tee "$LOG_FP16"
     echo "[Ablation] FP16 baseline for ${TASK} complete."
     echo ""
 
@@ -99,7 +110,7 @@ print(f'[Ablation] Updated config: theta1=${THETA1}, theta2=${THETA2}, ratio=${R
 
         # Step 3: Evaluate (results saved to markdown + console log)
         echo "[Ablation] Running evaluation..."
-        python3 main_eval.py --config "$CONFIG" --tasks "$TASK" --results_md "$RESULTS_MD" 2>&1 | tee -a "${LOG_FILE}"
+        python3 main_eval.py --config "$CONFIG" --results_md "$RESULTS_MD" 2>&1 | tee -a "${LOG_FILE}"
 
         # Step 4: Append quantization time to markdown results
         echo "" >> "$RESULTS_MD"
