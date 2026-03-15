@@ -5,7 +5,6 @@
 set -e
 
 CONFIG="configs/default.yaml"
-RESULTS_MD="eval_results/ablation_results.md"
 SCALE_PATH="scale_cache/asdq_llava_7b_w4.pt"
 LOG_DIR="eval_results/logs"
 
@@ -32,6 +31,9 @@ EXPERIMENTS=(
 
 NUM_EXPERIMENTS=${#EXPERIMENTS[@]}
 NUM_TASKS=${#TASKS[@]}
+
+TASK_PREFIX=$(IFS=_; echo "${TASKS[*]}")
+RESULTS_MD="eval_results/${TASK_PREFIX}_ablation_results.md"
 
 # Write markdown header
 cat > "$RESULTS_MD" << 'HEADER'
