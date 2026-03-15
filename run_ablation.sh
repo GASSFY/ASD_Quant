@@ -32,17 +32,6 @@ EXPERIMENTS=(
 NUM_EXPERIMENTS=${#EXPERIMENTS[@]}
 NUM_TASKS=${#TASKS[@]}
 
-TASK_PREFIX=$(IFS=_; echo "${TASKS[*]}")
-RESULTS_MD="eval_results/${TASK_PREFIX}_ablation_results.md"
-
-# Write markdown header
-cat > "$RESULTS_MD" << 'HEADER'
-# ASDQ Ablation Study Results
-
-Model: llava-onevision-qwen2-7b-ov | W4 quantization | SpQR-style mixed precision
-
-HEADER
-
 for TASK in "${TASKS[@]}"; do
     echo ""
     echo "========================================================"
@@ -50,10 +39,14 @@ for TASK in "${TASKS[@]}"; do
     echo "========================================================"
     echo ""
 
-    # Section header for this task in results
-    echo "" >> "$RESULTS_MD"
-    echo "## Task: ${TASK}" >> "$RESULTS_MD"
-    echo "" >> "$RESULTS_MD"
+    # One results file per task: mmmu_val_ablation_results.md, ai2d_ablation_results.md, etc.
+    RESULTS_MD="eval_results/${TASK}_ablation_results.md"
+    cat > "$RESULTS_MD" << HEADER
+# ASDQ Ablation Study Results: ${TASK}
+
+Model: llava-onevision-qwen2-7b-ov | W4 quantization | SpQR-style mixed precision
+
+HEADER
 
     # Set config tasks to current TASK (config drives eval; no CLI override)
     python3 -c "
@@ -138,6 +131,6 @@ echo "========================================================"
 echo " All tasks complete!"
 echo " Tasks: ${NUM_TASKS} (${TASKS[*]})"
 echo " Per task: 1 FP16 baseline + ${NUM_EXPERIMENTS} ablation experiments"
-echo " Results: ${RESULTS_MD}"
+echo " Results: eval_results/<task>_ablation_results.md (one per task)"
 echo " Logs:    ${LOG_DIR}/"
 echo "========================================================"
