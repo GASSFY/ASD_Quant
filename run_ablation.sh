@@ -59,12 +59,34 @@ with open('${CONFIG}', 'w') as f:
 print(f'[Ablation] Set config tasks to ${TASK}')
 "
 
+    # FP16 baseline: ensure no .pt is loaded (avoid torch.load on stale/corrupt file)
+    python3 -c "
+import yaml
+with open('${CONFIG}', 'r') as f:
+    cfg = yaml.safe_load(f)
+cfg['scale_path'] = ''
+with open('${CONFIG}', 'w') as f:
+    yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+print('[Ablation] Set config scale_path to empty for FP16 baseline')
+"
+
     # ---------- FP16 baseline (no quantization, no .pt loaded) ----------
     echo "[Ablation] Running FP16 baseline for ${TASK}..."
     LOG_FP16="${LOG_DIR}/${TASK}_fp16_baseline.log"
     python3 main_eval.py --config "$CONFIG" --results_md "$RESULTS_MD" --output_path eval_results 2>&1 | tee "$LOG_FP16"
     echo "[Ablation] FP16 baseline for ${TASK} complete."
     echo ""
+
+    # Restore scale_path for ablation experiments (quantize will write, eval will load)
+    python3 -c "
+import yaml
+with open('${CONFIG}', 'r') as f:
+    cfg = yaml.safe_load(f)
+cfg['scale_path'] = '${SCALE_PATH}'
+with open('${CONFIG}', 'w') as f:
+    yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+print('[Ablation] Restored config scale_path for ablation experiments')
+"
 
     # ---------- Ablation experiments for this task ----------
     IDX=0
