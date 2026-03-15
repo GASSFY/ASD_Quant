@@ -106,7 +106,7 @@ pip install -e .
 | 场景 | 命令 |
 |------|------|
 | 评估量化后的模型 | `python main_eval.py --config configs/default.yaml --scale_path scale_cache/asdq_llava_7b_w4.pt --tasks mmmu_val --output_path eval_results` |
-| 评估原始 FP 模型（不加载量化权重） | `python main_eval.py --config configs/default.yaml --tasks mmmu_val --output_path eval_results`（不传 `--scale_path`） |
+| 评估原始 FP 模型（不加载量化权重） | `python main_eval.py --config configs/default.yaml --tasks mmmu_val --output_path eval_results`（不传 `--scale_path`，但是需要注意的是，default.yaml中也有一个scale_path配置，需要这个配置的路径没有对应的量化文件才行） |
 | 多任务评估 | `python main_eval.py --config configs/default.yaml --scale_path scale_cache/asdq_llava_7b_w4.pt --tasks mmmu_val,mme,mmb --output_path eval_results` |
 | 快速试跑（限制样本数） | `python main_eval.py --config configs/default.yaml --scale_path scale_cache/asdq_llava_7b_w4.pt --tasks mmmu_val --limit 10 --output_path eval_results` |
 | 将结果追加到 Markdown（如消融） | `python main_eval.py --config configs/default.yaml --scale_path scale_cache/asdq_llava_7b_w4.pt --tasks mmmu_val --output_path eval_results --results_md eval_results/ablation_results.md` |
