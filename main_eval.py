@@ -32,13 +32,18 @@ def _handle_non_serializable(o):
 
 def _append_results_md(md_path: str, args: argparse.Namespace, results: dict) -> None:
     """Append evaluation results to a markdown file."""
-    theta1 = getattr(args, "asd_theta1", "N/A")
-    theta2 = getattr(args, "asd_theta2", "N/A")
-    ratio = getattr(args, "asd_high_precision_ratio", "N/A")
-    w_bit = getattr(args, "w_bit", getattr(args, "asd_low_w_bit", "N/A"))
+    scale_path = getattr(args, "scale_path", None)
+    if scale_path and os.path.exists(scale_path):
+        theta1 = getattr(args, "asd_theta1", "N/A")
+        theta2 = getattr(args, "asd_theta2", "N/A")
+        ratio = getattr(args, "asd_high_precision_ratio", "N/A")
+        w_bit = getattr(args, "w_bit", getattr(args, "asd_low_w_bit", "N/A"))
+        section_title = f"\n## theta1={theta1}, theta2={theta2}, ratio={ratio}, w_bit={w_bit}\n"
+    else:
+        section_title = "\n## FP16 baseline (no quantization)\n"
 
     lines: list[str] = []
-    lines.append(f"\n## theta1={theta1}, theta2={theta2}, ratio={ratio}, w_bit={w_bit}\n")
+    lines.append(section_title)
 
     # Main metrics table from lmms-eval
     table_str = evaluator.make_table(results)
