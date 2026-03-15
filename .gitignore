@@ -41,6 +41,7 @@ Thumbs.db
 *.log
 scale_cache/
 configs/*
+!configs/*.example
 eval_results/
 
 # LLAVA module
