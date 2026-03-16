@@ -193,6 +193,8 @@ def run_eval(args: argparse.Namespace) -> dict | None:
     np.random.seed(seeds[1])
     torch.manual_seed(seeds[2])
 
+    # Pass output_path so tasks like mmbench_en_dev can write submission files (args.output_path in aggregate)
+    output_path = args.output_path or "eval_results"
     results = evaluator.simple_evaluate(
         model=args.model,
         lm=lm,
@@ -214,6 +216,7 @@ def run_eval(args: argparse.Namespace) -> dict | None:
         numpy_random_seed=seeds[1],
         torch_random_seed=seeds[2],
         fewshot_random_seed=seeds[3],
+        output_path=output_path,
     )
 
     if results:
