@@ -14,7 +14,7 @@ mkdir -p eval_results/logs scale_cache
 if [ -n "${ABLATION_TASKS}" ]; then
     IFS=',' read -ra TASKS <<< "$ABLATION_TASKS"
 else
-    TASKS=( "mmmu_val" "realworldqa" "ocrbench" "ai2d" )
+    TASKS=( "mmmu_val" "realworldqa" "ocrbench" "ai2d" "chartqa" )
 fi
 
 # ---------- Experiment configurations ----------
