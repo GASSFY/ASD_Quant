@@ -217,6 +217,7 @@ def run_eval(args: argparse.Namespace) -> dict | None:
         torch_random_seed=seeds[2],
         fewshot_random_seed=seeds[3],
         output_path=output_path,
+        cli_args=args,
     )
 
     if results:
