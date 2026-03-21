@@ -53,7 +53,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--asd_mixed_precision", action="store_true", default=True)
     parser.add_argument("--asd_theta1", type=float, default=0.8)
     parser.add_argument("--asd_theta2", type=float, default=0.2)
-    parser.add_argument("--asd_normalize", type=bool, default=True)
     parser.add_argument("--asd_high_precision_ratio", type=float, default=0.1)
     parser.add_argument("--asd_low_w_bit", type=int, default=4)
     args = parser.parse_args()

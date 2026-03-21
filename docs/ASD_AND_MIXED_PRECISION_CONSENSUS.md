@@ -237,7 +237,6 @@ flowchart TB
 # ASD 参数
 asd_theta1: 0.8              # K（绝对显著性）的权重
 asd_theta2: 0.2              # Psi（相对显著性）的权重
-asd_normalize: true           # 归一化 K/Psi 到 [0,1]
 
 # 混合精度
 asd_mixed_precision: true     # 是否启用（默认启用）

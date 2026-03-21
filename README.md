@@ -58,7 +58,6 @@ pip install -e .
 | | `text_data_path` | `""` | 可选纯文本校准数据路径 | main_quant |
 | **ASD** | `asd_theta1` | `0.8` | K（绝对显著性）的权重 | main_quant |
 | | `asd_theta2` | `0.2` | Psi（相对显著性）的权重 | main_quant |
-| | `asd_normalize` | `true` | 是否将 K、Psi 归一化到 [0,1] 再合并，建议保持 true | main_quant |
 | **混合精度** | `asd_mixed_precision` | `true` | 是否启用 ASD 混合精度；为 true 时需提供校准数据 | main_quant |
 | | `asd_high_precision_ratio` | `0.1` | 全局保留 float 的通道比例（全层一起排序） | main_quant |
 | | `asd_low_w_bit` | `4` | 非高精度列的量化比特数 | main_quant |

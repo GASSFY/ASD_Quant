@@ -26,8 +26,6 @@ text_data_path: ""
 # Psi = z-score of importance within layer（层内相对突出度）
 asd_theta1: 0.8
 asd_theta2: 0.2
-# 是否将 K、Psi 归一化到 [0,1] 再合并（强烈建议开启）
-asd_normalize: true
 
 # ----- 混合精度（ASD 驱动：全局比例 + SpQR 风格） -----
 # 是否启用混合精度（启用时需校准数据以收集 Hessian 对角）
