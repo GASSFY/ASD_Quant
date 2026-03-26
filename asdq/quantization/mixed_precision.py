@@ -95,5 +95,5 @@ def select_high_precision_columns(
 
     sorted_list = sorted(global_asd_list, key=lambda t: t[2], reverse=True)
     n_total = len(sorted_list)
-    n_high = max(1, int(round(n_total * ratio)))
+    n_high = max(1, int(round(n_total * ratio)))        # 确保如果你设置了ratio非零，那么至少会保留一个高精度列，防止ratio太小（0.01 * 5)
     return {(t[0], t[1]) for t in sorted_list[:n_high]}

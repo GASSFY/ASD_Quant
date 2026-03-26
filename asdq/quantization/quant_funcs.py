@@ -20,7 +20,7 @@ def pseudo_quantize_tensor(
     org_shape = tensor.shape
     if q_group_size > 0:
         assert org_shape[-1] % q_group_size == 0
-        tensor = tensor.reshape(-1, q_group_size)
+        tensor = tensor.reshape(-1, q_group_size)       # 准确来说，现在就是分成（有多少组，每组多少样本）
     if per_tensor:
         tensor = tensor.reshape(1, -1)
     assert tensor.dim() == 2
