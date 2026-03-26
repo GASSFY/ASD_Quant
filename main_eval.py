@@ -134,6 +134,33 @@ def _apply_config(args: argparse.Namespace, config: dict) -> None:
         setattr(args, k, v)
 
 
+def _is_cli_explicit(field: str, argv: list[str]) -> bool:
+    """Whether a field is explicitly provided via CLI."""
+    flag = f"--{field.replace('_', '-')}"
+    return flag in argv
+
+
+def _merge_config_with_cli_priority(
+    base_args: argparse.Namespace,
+    config: dict,
+    argv: list[str],
+) -> argparse.Namespace:
+    """
+    Merge YAML config into parsed args, while preserving explicit CLI overrides.
+    """
+    args_copy = argparse.Namespace(**vars(base_args))
+    explicit_fields = {"output_path", "tasks", "results_md"}
+    preserved_values = {
+        k: getattr(base_args, k)
+        for k in explicit_fields
+        if _is_cli_explicit(k, argv)
+    }
+    _apply_config(args_copy, config)
+    for k, v in preserved_values.items():
+        setattr(args_copy, k, v)
+    return args_copy
+
+
 def _parse_seed(seed_str: str) -> tuple:
     parts = seed_str.replace(" ", "").split(",")
     if len(parts) == 1:
@@ -223,8 +250,8 @@ def run_eval(args: argparse.Namespace) -> dict | None:
         if "groups" in results:
             print(evaluator.make_table(results, "groups"))
         if args.output_path:
-            os.makedirs(os.path.dirname(args.output_path) or ".", exist_ok=True)
             out_file = args.output_path if args.output_path.endswith(".json") else os.path.join(args.output_path, "results.json")
+            os.makedirs(os.path.dirname(out_file) or ".", exist_ok=True)
             with open(out_file, "w", encoding="utf-8") as f:
                 json.dump(results, f, indent=2, default=_handle_non_serializable)
             print(f"Results saved to {out_file}")
@@ -237,14 +264,14 @@ def run_eval(args: argparse.Namespace) -> dict | None:
 def cli_main(args: Union[argparse.Namespace, None] = None) -> None:
     if args is None:
         args = parse_eval_args()
+    argv = sys.argv[1:]
 
     if args.config and os.path.exists(args.config):
         with open(args.config, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
         cfg = [cfg] if not isinstance(cfg, list) else cfg
         for c in cfg:
-            args_copy = argparse.Namespace(**vars(args))
-            _apply_config(args_copy, c)
+            args_copy = _merge_config_with_cli_priority(args, c, argv)
             run_eval(args_copy)
     else:
         run_eval(args)

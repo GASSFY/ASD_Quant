@@ -3,6 +3,7 @@
 # Usage: bash scripts/run_ratio0_add_llava_ov7b.sh
 
 set -e
+set -o pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -90,6 +91,7 @@ print(f'[ratio0-add] Updated config for task={task}, theta1={theta1}, theta2={th
   echo "[ratio0-add] Quantization finished in ${QUANT_MIN}m ${QUANT_SEC}s (${QUANT_TIME}s total)"
 
   echo "[ratio0-add] Running evaluation..."
+  mkdir -p "$MODEL_OUT"
   python3 main_eval.py --config "$CONFIG" --results_md "$RESULTS_MD" --output_path "$MODEL_OUT" 2>&1 | tee -a "${LOG_FILE}"
 
   echo "" >> "$RESULTS_MD"
