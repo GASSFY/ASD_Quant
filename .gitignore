@@ -43,6 +43,7 @@ scale_cache/
 configs/*
 !configs/*.example
 eval_results/
+eval_new_results/
 
 # LLAVA module
 LLaVA-NeXT/
