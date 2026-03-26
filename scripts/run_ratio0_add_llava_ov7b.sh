@@ -23,6 +23,7 @@ THETA1="0.0"
 THETA2="0.0"
 RATIO="0.0"
 TAG="t1_${THETA1}_t2_${THETA2}_r_${RATIO}"
+export CUDA_VISIBLE_DEVICES=0
 
 TASKS=( "mmmu_val" "realworldqa" "ocrbench" "ai2d" "chartqa" )
 NUM_TASKS=${#TASKS[@]}
