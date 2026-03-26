@@ -184,14 +184,24 @@ with open('${CONFIG}', 'w', encoding='utf-8') as f:
 print(f'[Ablation] Updated config: theta1=${THETA1}, theta2=${THETA2}, ratio=${RATIO}')
 "
 
-      echo "[Ablation] Running quantization..."
-      QUANT_START=$(date +%s)
-      python3 main_quant.py --config "$CONFIG" 2>&1 | tee "${LOG_FILE}"
-      QUANT_END=$(date +%s)
-      QUANT_TIME=$((QUANT_END - QUANT_START))
-      QUANT_MIN=$((QUANT_TIME / 60))
-      QUANT_SEC=$((QUANT_TIME % 60))
-      echo "[Ablation] Quantization finished in ${QUANT_MIN}m ${QUANT_SEC}s (${QUANT_TIME}s total)"
+      QUANT_TIME=0
+      QUANT_MIN=0
+      QUANT_SEC=0
+      QUANT_RAN=0
+      if [ -f "$SCALE_PATH" ]; then
+        echo "[Ablation] Found existing scale file: ${SCALE_PATH}"
+        echo "[Ablation] Skip quantization and run evaluation directly."
+      else
+        echo "[Ablation] Running quantization..."
+        QUANT_START=$(date +%s)
+        python3 main_quant.py --config "$CONFIG" 2>&1 | tee "${LOG_FILE}"
+        QUANT_END=$(date +%s)
+        QUANT_TIME=$((QUANT_END - QUANT_START))
+        QUANT_MIN=$((QUANT_TIME / 60))
+        QUANT_SEC=$((QUANT_TIME % 60))
+        QUANT_RAN=1
+        echo "[Ablation] Quantization finished in ${QUANT_MIN}m ${QUANT_SEC}s (${QUANT_TIME}s total)"
+      fi
 
       echo "[Ablation] Running evaluation..."
       python3 main_eval.py --config "$CONFIG" --results_md "$RESULTS_MD" --output_path "$MODEL_OUT" 2>&1 | tee -a "${LOG_FILE}"
@@ -200,7 +210,7 @@ print(f'[Ablation] Updated config: theta1=${THETA1}, theta2=${THETA2}, ratio=${R
       echo "> Quantization time: **${QUANT_MIN}m ${QUANT_SEC}s** (${QUANT_TIME}s)" >> "$RESULTS_MD"
       echo "" >> "$RESULTS_MD"
 
-      if [ -f "$SCALE_PATH" ]; then
+      if [ "$QUANT_RAN" -eq 1 ] && [ -f "$SCALE_PATH" ]; then
         rm -f "$SCALE_PATH"
         echo "[Ablation] Deleted ${SCALE_PATH} to save disk space."
       fi
