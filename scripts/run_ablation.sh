@@ -1,158 +1,229 @@
 #!/bin/bash
-# ASDQ Ablation Study: test different theta1/theta2/ratio combinations per evaluation task
-# Usage: cd /path/to/ASDQ && bash run_ablation.sh
+# ASDQ multi-model ablation: same theta1/theta2/ratio grid as run_ablation.sh, per model under eval_new_results/<model_dir>/
+# Usage: bash scripts/run_more_model.sh   (from any cwd — script cds to repo root)
 
 set -e
 
-CONFIG="configs/default.yaml"
-SCALE_PATH="scale_cache/asdq_llava_7b_w4.pt"
-LOG_DIR="eval_results/logs"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
 
-mkdir -p eval_results/logs scale_cache
+CONFIG="configs/default.yaml"
+ROOT_OUT="eval_new_results"
+
+mkdir -p "$ROOT_OUT"
+
+# ---------- Parallel arrays: same length as configs/default.yaml model / model_args ----------
+MODEL_TYPES=(
+  "llava_onevision"
+)
+MODEL_ARGSS=(
+  "pretrained=your/model-name"
+)
+
+if [ "${#MODEL_TYPES[@]}" -ne "${#MODEL_ARGSS[@]}" ]; then
+  echo "Error: MODEL_TYPES and MODEL_ARGSS must have the same length."
+  exit 1
+fi
+
+# Derive directory name from pretrained=... in model_args (up to next comma); unsafe chars -> _
+derive_model_dir() {
+  python3 -c "
+import re, sys
+s = sys.argv[1]
+m = re.search(r'pretrained=([^,]+)', s)
+val = (m.group(1).strip() if m else 'model')
+for c in ['/', '\\\\', ':', '*', '?', '\"', '<', '>', '|', ' ']:
+    val = val.replace(c, '_')
+print(val or 'model')
+" "$1"
+}
+
+# Disambiguate duplicate pretrained slugs with _<index>
+resolve_model_dir() {
+  local idx="$1"
+  local base
+  base="$(derive_model_dir "${MODEL_ARGSS[$idx]}")"
+  local j
+  for ((j = 0; j < idx; j++)); do
+    if [ "$(derive_model_dir "${MODEL_ARGSS[$j]}")" = "$base" ]; then
+      echo "${base}_${idx}"
+      return
+    fi
+  done
+  echo "$base"
+}
 
 # ---------- Evaluation tasks (customize here or via ABLATION_TASKS env) ----------
 if [ -n "${ABLATION_TASKS}" ]; then
-    IFS=',' read -ra TASKS <<< "$ABLATION_TASKS"
+  IFS=',' read -ra TASKS <<< "$ABLATION_TASKS"
 else
-    TASKS=( "mmmu_val" "realworldqa" "ocrbench" "ai2d" "chartqa" )
+  TASKS=( "mmmu_val" "realworldqa" "ocrbench" "ai2d" "chartqa" )
 fi
 
 # ---------- Experiment configurations ----------
-# Format: "theta1 theta2 ratio"
+# Format: "theta1 theta2 ratio" — leading (0,0,0) for ratio=0
 EXPERIMENTS=(
-    "0.0  1.0  0.01"
-    "0.1  0.9  0.01"
-    "0.3  0.7  0.01"
-    "0.5  0.5  0.01"
-    "0.7  0.3  0.01"
-    "0.9  0.1  0.01"
-    "1.0  0.0  0.01"
+  "0.0  0.0  0.0"
+  "0.0  1.0  0.01"
+  "0.1  0.9  0.01"
+  "0.3  0.7  0.01"
+  "0.5  0.5  0.01"
+  "0.7  0.3  0.01"
+  "0.9  0.1  0.01"
+  "1.0  0.0  0.01"
 )
 
 NUM_EXPERIMENTS=${#EXPERIMENTS[@]}
 NUM_TASKS=${#TASKS[@]}
+NUM_MODELS=${#MODEL_TYPES[@]}
 
-for TASK in "${TASKS[@]}"; do
+for MI in "${!MODEL_TYPES[@]}"; do
+  MODEL_TYPE="${MODEL_TYPES[$MI]}"
+  MODEL_ARGS="${MODEL_ARGSS[$MI]}"
+  MODEL_DIR="$(resolve_model_dir "$MI")"
+  MODEL_ROOT="${ROOT_OUT}/${MODEL_DIR}"
+  LOG_DIR="${MODEL_ROOT}/logs"
+  SCALE_PATH="${MODEL_ROOT}/scale_cache/asdq_w4.pt"
+  MODEL_OUT="${MODEL_ROOT}"
+
+  mkdir -p "$LOG_DIR" "${MODEL_ROOT}/scale_cache"
+
+  echo ""
+  echo "################################################################"
+  echo "# Model index ${MI}/${NUM_MODELS}: ${MODEL_TYPE}"
+  echo "# model_args: ${MODEL_ARGS}"
+  echo "# Output dir: ${MODEL_ROOT}"
+  echo "################################################################"
+
+  python3 -c "
+import yaml, sys
+model_type, model_args = sys.argv[1], sys.argv[2]
+with open('${CONFIG}', 'r', encoding='utf-8') as f:
+    cfg = yaml.safe_load(f)
+cfg['model'] = model_type
+cfg['model_args'] = model_args
+with open('${CONFIG}', 'w', encoding='utf-8') as f:
+    yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+print('[multi-model] Set model and model_args in config')
+" "$MODEL_TYPE" "$MODEL_ARGS"
+
+  for TASK in "${TASKS[@]}"; do
     echo ""
     echo "========================================================"
-    echo " Task: ${TASK}"
+    echo " Model: ${MODEL_DIR} | Task: ${TASK}"
     echo "========================================================"
     echo ""
 
-    # One results file per task: mmmu_val_ablation_results.md, ai2d_ablation_results.md, etc.
-    RESULTS_MD="eval_results/${TASK}_ablation_results.md"
+    RESULTS_MD="${MODEL_ROOT}/${TASK}_ablation_results.md"
     cat > "$RESULTS_MD" << HEADER
 # ASDQ Ablation Study Results: ${TASK}
 
-Model: llava-onevision-qwen2-7b-ov | W4 quantization | SpQR-style mixed precision
+Model: ${MODEL_TYPE} | ${MODEL_ARGS} | W4 quantization | SpQR-style mixed precision
 
 HEADER
 
-    # Set config tasks to current TASK (config drives eval; no CLI override)
     python3 -c "
 import yaml
-with open('${CONFIG}', 'r') as f:
+with open('${CONFIG}', 'r', encoding='utf-8') as f:
     cfg = yaml.safe_load(f)
 cfg['tasks'] = '${TASK}'
-with open('${CONFIG}', 'w') as f:
+with open('${CONFIG}', 'w', encoding='utf-8') as f:
     yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 print(f'[Ablation] Set config tasks to ${TASK}')
 "
 
-    # FP16 baseline: ensure no .pt is loaded (avoid torch.load on stale/corrupt file)
     python3 -c "
 import yaml
-with open('${CONFIG}', 'r') as f:
+with open('${CONFIG}', 'r', encoding='utf-8') as f:
     cfg = yaml.safe_load(f)
 cfg['scale_path'] = ''
-with open('${CONFIG}', 'w') as f:
+with open('${CONFIG}', 'w', encoding='utf-8') as f:
     yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 print('[Ablation] Set config scale_path to empty for FP16 baseline')
 "
 
-    # ---------- FP16 baseline (no quantization, no .pt loaded) ----------
     echo "[Ablation] Running FP16 baseline for ${TASK}..."
     LOG_FP16="${LOG_DIR}/${TASK}_fp16_baseline.log"
-    python3 main_eval.py --config "$CONFIG" --results_md "$RESULTS_MD" --output_path eval_results 2>&1 | tee "$LOG_FP16"
+    python3 main_eval.py --config "$CONFIG" --results_md "$RESULTS_MD" --output_path "$MODEL_OUT" 2>&1 | tee "$LOG_FP16"
     echo "[Ablation] FP16 baseline for ${TASK} complete."
     echo ""
 
-    # Restore scale_path for ablation experiments (quantize will write, eval will load)
     python3 -c "
-import yaml
-with open('${CONFIG}', 'r') as f:
+import yaml, sys
+scale_path = sys.argv[1]
+with open('${CONFIG}', 'r', encoding='utf-8') as f:
     cfg = yaml.safe_load(f)
-cfg['scale_path'] = '${SCALE_PATH}'
-with open('${CONFIG}', 'w') as f:
+cfg['scale_path'] = scale_path
+with open('${CONFIG}', 'w', encoding='utf-8') as f:
     yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 print('[Ablation] Restored config scale_path for ablation experiments')
-"
+" "$SCALE_PATH"
 
-    # ---------- Ablation experiments for this task ----------
     IDX=0
     for EXP in "${EXPERIMENTS[@]}"; do
-        read -r THETA1 THETA2 RATIO <<< "$EXP"
-        IDX=$((IDX + 1))
-        TAG="t1_${THETA1}_t2_${THETA2}_r_${RATIO}"
-        LOG_FILE="${LOG_DIR}/${TASK}_${TAG}.log"
+      read -r THETA1 THETA2 RATIO <<< "$EXP"
+      IDX=$((IDX + 1))
+      TAG="t1_${THETA1}_t2_${THETA2}_r_${RATIO}"
+      LOG_FILE="${LOG_DIR}/${TASK}_${TAG}.log"
 
-        echo ""
-        echo "========================================================"
-        echo " Task: ${TASK} | Experiment ${IDX}/${NUM_EXPERIMENTS}: theta1=${THETA1}, theta2=${THETA2}, ratio=${RATIO}"
-        echo "========================================================"
-        echo ""
+      echo ""
+      echo "========================================================"
+      echo " Model: ${MODEL_DIR} | Task: ${TASK} | Experiment ${IDX}/${NUM_EXPERIMENTS}: theta1=${THETA1}, theta2=${THETA2}, ratio=${RATIO}"
+      echo "========================================================"
+      echo ""
 
-        # Step 1: Modify default.yaml
-        python3 -c "
+      python3 -c "
 import yaml
-with open('${CONFIG}', 'r') as f:
+with open('${CONFIG}', 'r', encoding='utf-8') as f:
     cfg = yaml.safe_load(f)
 cfg['asd_theta1'] = ${THETA1}
 cfg['asd_theta2'] = ${THETA2}
 cfg['asd_high_precision_ratio'] = ${RATIO}
-with open('${CONFIG}', 'w') as f:
+with open('${CONFIG}', 'w', encoding='utf-8') as f:
     yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 print(f'[Ablation] Updated config: theta1=${THETA1}, theta2=${THETA2}, ratio=${RATIO}')
 "
 
-        # Step 2: Quantize (with timing)
-        echo "[Ablation] Running quantization..."
-        QUANT_START=$(date +%s)
-        python3 main_quant.py --config "$CONFIG" 2>&1 | tee "${LOG_FILE}"
-        QUANT_END=$(date +%s)
-        QUANT_TIME=$((QUANT_END - QUANT_START))
-        QUANT_MIN=$((QUANT_TIME / 60))
-        QUANT_SEC=$((QUANT_TIME % 60))
-        echo "[Ablation] Quantization finished in ${QUANT_MIN}m ${QUANT_SEC}s (${QUANT_TIME}s total)"
+      echo "[Ablation] Running quantization..."
+      QUANT_START=$(date +%s)
+      python3 main_quant.py --config "$CONFIG" 2>&1 | tee "${LOG_FILE}"
+      QUANT_END=$(date +%s)
+      QUANT_TIME=$((QUANT_END - QUANT_START))
+      QUANT_MIN=$((QUANT_TIME / 60))
+      QUANT_SEC=$((QUANT_TIME % 60))
+      echo "[Ablation] Quantization finished in ${QUANT_MIN}m ${QUANT_SEC}s (${QUANT_TIME}s total)"
 
-        # Step 3: Evaluate (results saved to markdown + console log)
-        echo "[Ablation] Running evaluation..."
-        python3 main_eval.py --config "$CONFIG" --results_md "$RESULTS_MD" 2>&1 | tee -a "${LOG_FILE}"
+      echo "[Ablation] Running evaluation..."
+      python3 main_eval.py --config "$CONFIG" --results_md "$RESULTS_MD" --output_path "$MODEL_OUT" 2>&1 | tee -a "${LOG_FILE}"
 
-        # Step 4: Append quantization time to markdown results
-        echo "" >> "$RESULTS_MD"
-        echo "> Quantization time: **${QUANT_MIN}m ${QUANT_SEC}s** (${QUANT_TIME}s)" >> "$RESULTS_MD"
-        echo "" >> "$RESULTS_MD"
+      echo "" >> "$RESULTS_MD"
+      echo "> Quantization time: **${QUANT_MIN}m ${QUANT_SEC}s** (${QUANT_TIME}s)" >> "$RESULTS_MD"
+      echo "" >> "$RESULTS_MD"
 
-        # Step 5: Delete .pt file to save disk space
-        if [ -f "$SCALE_PATH" ]; then
-            rm -f "$SCALE_PATH"
-            echo "[Ablation] Deleted ${SCALE_PATH} to save disk space."
-        fi
+      if [ -f "$SCALE_PATH" ]; then
+        rm -f "$SCALE_PATH"
+        echo "[Ablation] Deleted ${SCALE_PATH} to save disk space."
+      fi
 
-        echo ""
-        echo "[Ablation] Task ${TASK} experiment ${IDX}/${NUM_EXPERIMENTS} complete."
-        echo ""
+      echo ""
+      echo "[Ablation] Model ${MODEL_DIR} | Task ${TASK} | experiment ${IDX}/${NUM_EXPERIMENTS} complete."
+      echo ""
     done
 
-    echo "[Ablation] Task ${TASK} complete (1 FP16 + ${NUM_EXPERIMENTS} ablation runs)."
+    echo "[Ablation] Model ${MODEL_DIR} | Task ${TASK} complete (1 FP16 + ${NUM_EXPERIMENTS} ablation runs)."
     echo ""
+  done
+
+  echo "[Ablation] Model ${MODEL_DIR} (all tasks) complete."
+  echo ""
 done
 
 echo "========================================================"
-echo " All tasks complete!"
+echo " All models and tasks complete!"
+echo " Models: ${NUM_MODELS}"
 echo " Tasks: ${NUM_TASKS} (${TASKS[*]})"
-echo " Per task: 1 FP16 baseline + ${NUM_EXPERIMENTS} ablation experiments"
-echo " Results: eval_results/<task>_ablation_results.md (one per task)"
-echo " Logs:    ${LOG_DIR}/"
+echo " Per task per model: 1 FP16 baseline + ${NUM_EXPERIMENTS} ablation experiments"
+echo " Results: ${ROOT_OUT}/<model_dir>/<task>_ablation_results.md"
+echo " Logs:    ${ROOT_OUT}/<model_dir>/logs/"
+echo " Scales:  ${ROOT_OUT}/<model_dir>/scale_cache/"
 echo "========================================================"
