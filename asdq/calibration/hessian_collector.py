@@ -34,9 +34,12 @@ def move_embed(model: nn.Module, device: str) -> None:
     elif "Llama" in cls_name and hasattr(model, "model"):
         model.model.embed_tokens = model.model.embed_tokens.to(device)
     elif "InternVL" in cls_name and hasattr(model, "language_model"):
-        model.language_model.model.tok_embeddings = (
-            model.language_model.model.tok_embeddings.to(device)
-        )
+        lm = model.language_model
+        inner = getattr(lm, "model", lm) 
+        if hasattr(inner, "tok_embeddings"):
+            inner.tok_embeddings = inner.tok_embeddings.to(device)
+        elif hasattr(inner, "embed_tokens"):
+            inner.embed_tokens = inner.embed_tokens.to(device)
     else:
         pass
 
