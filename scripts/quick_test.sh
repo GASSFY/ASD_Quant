@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Order: InternVL2-26B -> InternVL2-8B -> LLaVA-1.5-7B -> InternVL2-1B -> InternVL2-2B (single GPU)
+# run_one_model "internvl2_26b" "internvl2" "pretrained=OpenGVLab/InternVL2-26B" "configs/internvl2/Eval/eval.yaml"
+# run_one_model "internvl2_8b" "internvl2" "pretrained=OpenGVLab/InternVL2-8B" "configs/internvl2/Eval/eval.yaml"
+# run_one_model "llava_v15_7b" "llava" "pretrained=liuhaotian/llava-v1.5-7b" "configs/llava_v15/Eval/eval.yaml"
+# run_one_model "internvl2_1b" "internvl2" "pretrained=OpenGVLab/InternVL2-1B" "configs/internvl2/Eval/eval.yaml"
+# run_one_model "internvl2_2b" "internvl2" "pretrained=OpenGVLab/InternVL2-2B" "configs/internvl2/Eval/eval.yaml"
+
+
+cd ..   # 移动到量化目录
 # ===== 你只需要改这两处模型参数 =====
-MODEL="${1:-llava}"   # 可选: llava / internvl2 / llava_onevision
-MODEL_ARGS="${2:-pretrained=liuhaotian/llava-v1.5-7b}"
+MODEL="internvl2"   # 可选: llava / internvl2 / llava_onevision
+MODEL_ARGS="pretrained=OpenGVLab/InternVL2-1B"
 
 # ===== 固定数据路径（按你的要求）=====
 DATA_PATH="/root/autodl-tmp/hf_home/datasets/coco/sharegpt4v_coco_only.json"
