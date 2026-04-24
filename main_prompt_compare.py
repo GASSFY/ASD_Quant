@@ -33,6 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scale_path", type=str, default=None, help="Optional quantized .pt checkpoint path.")
     parser.add_argument("--fp16_only", action="store_true", default=False, help="Only run FP16 model.")
     parser.add_argument("--max_new_tokens", type=int, default=128)
+    parser.add_argument("--debug", action="store_true", default=False, help="Print generation debug info.")
 
     parser.add_argument("--batch_size", type=str, default="1")
     parser.add_argument("--device", type=str, default=None)
@@ -88,7 +89,7 @@ def _build_data_item(prompt: str, has_image: bool, sample_id: str) -> dict[str, 
     return data_item
 
 
-def _generate_text(process_model, sample: dict[str, Any], max_new_tokens: int) -> str:
+def _generate_text(process_model, sample: dict[str, Any], max_new_tokens: int, debug: bool = False) -> str:
     prompt = str(sample["prompt"]).strip()
     if not prompt:
         raise ValueError(f"Sample {sample.get('id', 'unknown')} has empty prompt.")
@@ -118,8 +119,25 @@ def _generate_text(process_model, sample: dict[str, Any], max_new_tokens: int) -
             eos_token_id=tokenizer.eos_token_id,
         )
     prompt_len = int(forward_kwargs["attention_mask"][0].sum().item())
-    gen_ids = out_ids[0][prompt_len:]
-    return tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
+    out_len = int(out_ids.shape[-1])
+    raw_decode = tokenizer.decode(out_ids[0], skip_special_tokens=False)
+
+    if debug:
+        print("[DEBUG] sample_id:", sample.get("id", "unknown"))
+        print("[DEBUG] prompt_len:", prompt_len)
+        print("[DEBUG] out_len:", out_len)
+        print("[DEBUG] raw_decode:")
+        print(raw_decode)
+        print("-" * 80)
+
+    # When generate() is driven by inputs_embeds, some models may return only
+    # newly generated tokens (or shorter sequence than prompt_len).
+    if out_len > prompt_len:
+        gen_ids = out_ids[0][prompt_len:]
+        text = tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
+    else:
+        text = tokenizer.decode(out_ids[0], skip_special_tokens=True).strip()
+    return text
 
 
 def _write_results(rows: list[dict[str, Any]], args: argparse.Namespace) -> None:
@@ -177,7 +195,7 @@ def main() -> None:
 
     lm_fp16, pm_fp16 = _load_internvl2(args.batch_size, args.device, scale_path=None)
     for s in samples:
-        fp16_text = _generate_text(pm_fp16, s, args.max_new_tokens)
+        fp16_text = _generate_text(pm_fp16, s, args.max_new_tokens, debug=args.debug)
         rows.append(
             {
                 "id": s.get("id", "sample"),
@@ -194,7 +212,7 @@ def main() -> None:
     if not args.fp16_only:
         lm_quant, pm_quant = _load_internvl2(args.batch_size, args.device, args.scale_path)
         for i, s in enumerate(samples):
-            rows[i]["quant"] = _generate_text(pm_quant, s, args.max_new_tokens)
+            rows[i]["quant"] = _generate_text(pm_quant, s, args.max_new_tokens, debug=args.debug)
         del pm_quant, lm_quant
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

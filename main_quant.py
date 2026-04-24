@@ -20,6 +20,10 @@ from asdq.calibration.coco_vl import get_multimodal_calib_dataset
 from asdq.calibration.hessian_collector import collect_hessian_diag
 from asdq.metrics import asd_kwargs_from_config
 from asdq.quantization.quantize import pseudo_quantize_model_weight
+from asdq.quantization.real_quant import (
+    apply_quantized_payload,
+    quantize_model_to_int4,
+)
 from asdq.quantization.mixed_precision import (
     compute_global_asd_list,
     select_high_precision_columns,
@@ -49,6 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--w_bit", type=int, default=4)
     parser.add_argument("--w_group", type=int, default=128)
     parser.add_argument("--pseudo_quant", action="store_true", default=True)
+    parser.add_argument("--real_quant", action="store_true", default=False, help="Enable real int4 quantized modules")
     # ASD mixed precision
     parser.add_argument("--asd_mixed_precision", action="store_true", default=True)
     parser.add_argument("--asd_theta1", type=float, default=0.8)
@@ -99,7 +104,12 @@ def _run_single(args: argparse.Namespace) -> None:
     if not args.run_process:
         if args.scale_path and os.path.exists(args.scale_path):
             state = torch.load(args.scale_path, map_location="cpu", weights_only=True)
-            if isinstance(state, dict) and "state_dict" in state:
+            if isinstance(state, dict) and "quant_payload" in state:
+                ok = apply_quantized_payload(process_model.model, state["quant_payload"])
+                print(f"[ASDQ] Loaded quant payload from {args.scale_path}, applied={ok}")
+                if "state_dict" in state:
+                    lm._model.load_state_dict(state["state_dict"], strict=False)
+            elif isinstance(state, dict) and "state_dict" in state:
                 lm._model.load_state_dict(state["state_dict"], strict=False)
             else:
                 lm._model.load_state_dict(state, strict=False)
@@ -145,8 +155,16 @@ def _run_single(args: argparse.Namespace) -> None:
     elif hasattr(process_model.model, "cuda"):
         process_model.model.cuda()
 
+    quant_payload = None
+    if args.real_quant:
+        quant_payload = quantize_model_to_int4(
+            process_model.model,
+            q_group_size=args.w_group,
+            high_precision_columns=high_precision_columns,
+        )
+        print(f"[ASDQ] Real int4 quantization applied (group={args.w_group}).")
     # Pseudo quantization
-    if args.pseudo_quant:
+    elif args.pseudo_quant:
         if high_precision_columns is not None:
             pseudo_quantize_model_weight(
                 process_model.model,
@@ -170,7 +188,10 @@ def _run_single(args: argparse.Namespace) -> None:
     if args.scale_path:
         os.makedirs(os.path.dirname(args.scale_path) or ".", exist_ok=True)
         state_dict = lm._model.state_dict()
-        torch.save({"state_dict": state_dict}, args.scale_path)
+        save_obj = {"state_dict": state_dict}
+        if quant_payload is not None:
+            save_obj["quant_payload"] = quant_payload
+        torch.save(save_obj, args.scale_path)
         print(f"[ASDQ] Saved quantized state to {args.scale_path}")
 
 

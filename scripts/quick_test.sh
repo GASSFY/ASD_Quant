@@ -38,7 +38,7 @@ python main_quant.py \
   --data_path "${DATA_PATH}" \
   --image_folder "${IMAGE_FOLDER}" \
   --run_process \
-  --pseudo_quant \
+  --real_quant \
   --w_bit "${W_BIT}" \
   --w_group "${W_GROUP}" \
   --asd_mixed_precision \
