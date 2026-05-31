@@ -21,10 +21,11 @@ Usage examples (run from ASDQ repo root):
     --limit 100 --warmup 5 \\
     --output_json bench_results/quant.json
 
-  # With GPU power sampling (Linux + nvidia-smi)
-  python scripts/bench_inference.py --config configs/bench_example.yaml --power_log bench_results/power.csv
+  # With GPU power sampling (Windows/Linux + nvidia-smi)
+  python scripts/bench_inference.py --config configs/bench_fp16.yaml --power_log bench_results/power.csv
 
-Power log is written by nvidia-smi dmon in the background; average W is printed at the end.
+Power is sampled via ``nvidia-smi --query-gpu=power.draw`` in a background thread (default 200 ms).
+Average W is computed over the measured inference window only (warmup excluded).
 Model loading time is NOT included in latency stats.
 """
 from __future__ import annotations
@@ -36,12 +37,14 @@ import random
 import statistics
 import subprocess
 import sys
+import threading
 import time
 import warnings
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import MethodType
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -97,7 +100,19 @@ def _count_int4_modules(model: torch.nn.Module) -> int:
     return sum(1 for m in model.modules() if isinstance(m, Int4QuantLinear))
 
 
-def _instrument_generate_until(lm: Any, warmup: int, latencies_sec: List[float]) -> None:
+@dataclass
+class MeasureWindow:
+    start_ts: Optional[float] = None
+    end_ts: Optional[float] = None
+
+
+def _instrument_generate_until(
+    lm: Any,
+    warmup: int,
+    limit: int,
+    latencies_sec: List[float],
+    measure_window: MeasureWindow,
+) -> None:
     """Wrap generate_until to record per-sample E2E time (cuda synchronized)."""
     original = lm.generate_until
     sample_idx = {"n": 0}
@@ -106,6 +121,8 @@ def _instrument_generate_until(lm: Any, warmup: int, latencies_sec: List[float])
         results = []
         for reg in requests:
             sample_idx["n"] += 1
+            if sample_idx["n"] == warmup + 1:
+                measure_window.start_ts = time.perf_counter()
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
             t0 = time.perf_counter()
@@ -115,58 +132,180 @@ def _instrument_generate_until(lm: Any, warmup: int, latencies_sec: List[float])
             dt = time.perf_counter() - t0
             if sample_idx["n"] > warmup:
                 latencies_sec.append(dt)
+            if sample_idx["n"] == warmup + limit:
+                measure_window.end_ts = time.perf_counter()
             results.extend(chunk)
         return results
 
     lm.generate_until = MethodType(lambda _self, reqs: generate_until_timed(reqs), lm)
 
 
-def _start_power_logger(path: str) -> Optional[subprocess.Popen]:
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+def _query_gpu_power_draw() -> Optional[float]:
     try:
-        proc = subprocess.Popen(
-            ["nvidia-smi", "dmon", "-s", "p", "-d", "1", "-o", "DT", "-f", path],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=power.draw", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
         )
-        return proc
-    except FileNotFoundError:
-        print("[bench] nvidia-smi not found; skip power logging.")
+        if r.returncode != 0 or not r.stdout.strip():
+            return None
+        val = float(r.stdout.strip().splitlines()[0].split(",")[0].strip())
+        return val if val >= 0 else None
+    except (FileNotFoundError, ValueError, IndexError, subprocess.TimeoutExpired):
         return None
 
 
-def _stop_power_logger(proc: Optional[subprocess.Popen]) -> None:
-    if proc is None:
-        return
-    proc.terminate()
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
+class PowerSampler:
+    """Background power sampler using nvidia-smi --query-gpu=power.draw."""
+
+    def __init__(self, log_path: str, interval_ms: int = 200) -> None:
+        self.log_path = log_path
+        self.interval_sec = interval_ms / 1000.0
+        self.samples: List[Tuple[float, float]] = []
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._t0 = 0.0
+
+    def start(self, t0: float) -> bool:
+        if self._thread is not None:
+            return True
+        probe = _query_gpu_power_draw()
+        if probe is None:
+            print("[bench] nvidia-smi power.draw unavailable; skip power logging.")
+            return False
+        os.makedirs(os.path.dirname(self.log_path) or ".", exist_ok=True)
+        self._t0 = t0
+        self.samples = [(t0, probe)]
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return True
+
+    def stop(self) -> None:
+        if self._thread is None:
+            return
+        self._stop.set()
+        self._thread.join(timeout=10)
+        self._thread = None
+        self._write_log()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            if self._stop.wait(self.interval_sec):
+                break
+            watts = _query_gpu_power_draw()
+            if watts is not None:
+                self.samples.append((time.perf_counter(), watts))
+
+    def _write_log(self) -> None:
+        with open(self.log_path, "w", encoding="utf-8") as f:
+            f.write("elapsed_sec,power_w\n")
+            for ts, watts in self.samples:
+                f.write(f"{ts - self._t0:.6f},{watts:.3f}\n")
+
+    def summarize(self, window: MeasureWindow) -> dict:
+        if window.start_ts is None or window.end_ts is None:
+            return {
+                "power_avg_w": None,
+                "power_samples": 0,
+                "power_measure_window_sec": None,
+            }
+        in_window = [
+            watts
+            for ts, watts in self.samples
+            if window.start_ts <= ts <= window.end_ts
+        ]
+        if not in_window:
+            return {
+                "power_avg_w": None,
+                "power_samples": 0,
+                "power_measure_window_sec": round(window.end_ts - window.start_ts, 3),
+            }
+        return {
+            "power_avg_w": float(statistics.mean(in_window)),
+            "power_samples": len(in_window),
+            "power_measure_window_sec": round(window.end_ts - window.start_ts, 3),
+        }
 
 
-def _parse_power_log(path: str) -> Optional[float]:
-    """Return mean GPU power draw (W) from nvidia-smi dmon output file."""
+def _parse_dmon_power_log(path: str) -> Optional[float]:
+    """Return mean GPU power (W) from legacy nvidia-smi dmon -s p output (pwr column)."""
+    if not os.path.isfile(path):
+        return None
+    pwr_col: Optional[int] = None
+    powers: List[float] = []
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("#"):
+                header = line.lstrip("#").split()
+                if "pwr" in header:
+                    pwr_col = header.index("pwr")
+                continue
+            if pwr_col is None:
+                continue
+            parts = line.split()
+            if len(parts) <= pwr_col:
+                continue
+            token = parts[pwr_col]
+            if token == "-":
+                continue
+            try:
+                val = float(token)
+                if val >= 0:
+                    powers.append(val)
+            except ValueError:
+                continue
+    if not powers:
+        return None
+    return float(statistics.mean(powers))
+
+
+def _parse_query_power_log(path: str, window: Optional[MeasureWindow] = None, t0: float = 0.0) -> Optional[float]:
+    """Return mean power (W) from query-sampler CSV (elapsed_sec,power_w)."""
     if not os.path.isfile(path):
         return None
     powers: List[float] = []
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
             line = line.strip()
-            if not line or line.startswith("#"):
+            if not line or line.startswith("elapsed") or line.startswith("#"):
                 continue
-            parts = line.split()
-            for token in reversed(parts):
-                try:
-                    val = float(token)
-                    if val >= 0:
-                        powers.append(val)
-                        break
-                except ValueError:
+            parts = line.split(",")
+            if len(parts) < 2:
+                continue
+            try:
+                elapsed = float(parts[0])
+                watts = float(parts[1])
+            except ValueError:
+                continue
+            if watts < 0:
+                continue
+            ts = t0 + elapsed
+            if window is not None and window.start_ts is not None and window.end_ts is not None:
+                if ts < window.start_ts or ts > window.end_ts:
                     continue
+            powers.append(watts)
     if not powers:
         return None
     return float(statistics.mean(powers))
+
+
+def _warn_suspicious_power(power_avg_w: Optional[float], gpu_name: str) -> None:
+    if power_avg_w is None:
+        return
+    high_end_markers = ("PRO", "RTX", "A100", "H100", "A6000", "A5000", "TESLA", "QUADRO")
+    name_upper = gpu_name.upper()
+    if power_avg_w < 80 and any(marker in name_upper for marker in high_end_markers):
+        print(
+            f"[bench] WARNING: GPU power ({power_avg_w:.1f} W) looks unusually low for "
+            f"{gpu_name}. Check driver, power limit, or whether a temperature column was "
+            "parsed by mistake (legacy dmon logs)."
+        )
 
 
 def _summarize_latencies(latencies_sec: List[float]) -> dict:
@@ -236,7 +375,8 @@ def parse_args() -> argparse.Namespace:
         help="lmms-eval task output dir (OCRBench writes submission files here)",
     )
     p.add_argument("--output_json", default="", help="Save summary JSON here")
-    p.add_argument("--power_log", default="", help="If set, run nvidia-smi dmon to this file during inference")
+    p.add_argument("--power_log", default="", help="If set, sample power.draw to this CSV during inference")
+    p.add_argument("--power_interval_ms", type=int, default=200, help="Power sampling interval (ms)")
     p.add_argument("--run_tag", default="", help="Label in JSON, e.g. fp16 or int4")
     return p.parse_args()
 
@@ -252,7 +392,8 @@ def _apply_yaml(args: argparse.Namespace) -> None:
 
 
 def run_benchmark(args: argparse.Namespace) -> dict:
-    _print_gpu_env()
+    gpu_env = _print_gpu_env()
+    gpu_name = gpu_env.get("gpu_name", "")
     load_mode = resolve_eval_load_mode(
         args.scale_path,
         real_quant=args.real_quant,
@@ -274,7 +415,14 @@ def run_benchmark(args: argparse.Namespace) -> dict:
     print(f"[bench] Model load: {load_sec:.1f}s | Int4QuantLinear modules: {int4_layers}")
 
     latencies: List[float] = []
-    _instrument_generate_until(lm, warmup=args.warmup, latencies_sec=latencies)
+    measure_window = MeasureWindow()
+    _instrument_generate_until(
+        lm,
+        warmup=args.warmup,
+        limit=args.limit,
+        latencies_sec=latencies,
+        measure_window=measure_window,
+    )
 
     seeds = _parse_seed(args.seed)
     random.seed(seeds[0])
@@ -283,13 +431,16 @@ def run_benchmark(args: argparse.Namespace) -> dict:
 
     total_limit = args.warmup + args.limit
     os.makedirs(args.output_path, exist_ok=True)
-    power_proc = None
-    if args.power_log:
-        print(f"[bench] Power logging -> {args.power_log}")
-        power_proc = _start_power_logger(args.power_log)
+    power_sampler: Optional[PowerSampler] = None
 
     print("[bench] Starting inference (timed)...")
     t_infer0 = time.perf_counter()
+    if args.power_log:
+        print(f"[bench] Power logging -> {args.power_log} (interval {args.power_interval_ms} ms)")
+        power_sampler = PowerSampler(args.power_log, interval_ms=args.power_interval_ms)
+        if not power_sampler.start(t_infer0):
+            power_sampler = None
+
     try:
         evaluator.simple_evaluate(
             model=args.model,
@@ -311,10 +462,21 @@ def run_benchmark(args: argparse.Namespace) -> dict:
         )
     finally:
         infer_sec = time.perf_counter() - t_infer0
-        _stop_power_logger(power_proc)
+        if power_sampler is not None:
+            power_sampler.stop()
 
     stats = _summarize_latencies(latencies)
-    power_avg_w = _parse_power_log(args.power_log) if args.power_log else None
+    power_stats = (
+        power_sampler.summarize(measure_window)
+        if power_sampler is not None
+        else {
+            "power_avg_w": None,
+            "power_samples": 0,
+            "power_measure_window_sec": None,
+        }
+    )
+    power_avg_w = power_stats["power_avg_w"]
+    _warn_suspicious_power(power_avg_w, gpu_name)
 
     summary = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -332,8 +494,15 @@ def run_benchmark(args: argparse.Namespace) -> dict:
         "wall_infer_sec": round(infer_sec, 3),
         "latency": stats,
         "power_avg_w": power_avg_w,
+        "power_samples": power_stats["power_samples"],
+        "power_measure_window_sec": power_stats["power_measure_window_sec"],
+        "power_interval_ms": args.power_interval_ms if args.power_log else None,
         "power_log": args.power_log or None,
-        "notes": "Per-sample E2E = one generate_until call (image prep + vision + LLM decode). Load time excluded.",
+        "notes": (
+            "Per-sample E2E = one generate_until call (image prep + vision + LLM decode). "
+            "Load time excluded. Power avg is over measured samples only (warmup excluded), "
+            "sampled via nvidia-smi --query-gpu=power.draw."
+        ),
     }
 
     print("\n[bench] ===== Results =====")
@@ -344,7 +513,11 @@ def run_benchmark(args: argparse.Namespace) -> dict:
     print(f"  Throughput       : {stats['throughput_samples_per_s']:.4f} samples/s")
     print(f"                    (= 1000 / {stats['mean_ms']:.1f} ms = {stats['throughput_formula_1000_over_mean_ms']:.4f})")
     if power_avg_w is not None:
-        print(f"  GPU power (avg)  : {power_avg_w:.1f} W  (from {args.power_log})")
+        print(
+            f"  GPU power (avg, measured window): {power_avg_w:.1f} W  "
+            f"({power_stats['power_samples']} samples, "
+            f"{power_stats['power_measure_window_sec']:.1f}s window, log: {args.power_log})"
+        )
     else:
         print("  GPU power        : (not logged; use --power_log out.csv)")
     print("[bench] ====================\n")
