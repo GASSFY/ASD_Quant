@@ -20,6 +20,7 @@ from PIL import Image
 from lmms_eval.models import get_model
 
 from asdq.models import get_process_model
+from asdq.quantization.checkpoint import load_checkpoint
 
 MODEL_NAME = "internvl2"
 MODEL_ARGS = "pretrained=OpenGVLab/InternVL2-8B"
@@ -60,11 +61,7 @@ def _load_internvl2(batch_size: str, device: str | None, scale_path: str | None)
     if scale_path:
         if not os.path.exists(scale_path):
             raise FileNotFoundError(f"Checkpoint not found: {scale_path}")
-        state = torch.load(scale_path, map_location="cpu", weights_only=True)
-        if isinstance(state, dict) and "state_dict" in state:
-            lm._model.load_state_dict(state["state_dict"], strict=False)
-        else:
-            lm._model.load_state_dict(state, strict=False)
+        load_checkpoint(lm._model, scale_path)
 
     process_model = get_process_model(MODEL_NAME)(
         lm._model,

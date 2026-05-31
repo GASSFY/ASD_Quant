@@ -18,7 +18,7 @@ warnings.simplefilter("ignore", category=DeprecationWarning)
 from lmms_eval import evaluator, utils
 from lmms_eval.models import get_model
 from lmms_eval.tasks import TaskManager
-from asdq.quantization.real_quant import apply_quantized_payload
+from asdq.quantization.checkpoint import load_checkpoint
 
 
 def _handle_non_serializable(o):
@@ -208,17 +208,7 @@ def run_eval(args: argparse.Namespace) -> dict | None:
 
     # Load quantized state if provided
     if getattr(args, "scale_path", None) and os.path.exists(args.scale_path):
-        state = torch.load(args.scale_path, map_location="cpu", weights_only=True)
-        if isinstance(state, dict) and "quant_payload" in state:
-            ok = apply_quantized_payload(lm._model, state["quant_payload"])
-            print(f"[ASDQ] Loaded quant payload from {args.scale_path}, applied={ok}")
-            if "state_dict" in state:
-                lm._model.load_state_dict(state["state_dict"], strict=False)
-        elif isinstance(state, dict) and "state_dict" in state:
-            lm._model.load_state_dict(state["state_dict"], strict=False)
-        else:
-            lm._model.load_state_dict(state, strict=False)
-        print(f"[ASDQ] Loaded quantized state from {args.scale_path}")
+        load_checkpoint(lm._model, args.scale_path)
 
     seeds = _parse_seed(getattr(args, "seed", "0,1234,1234,1234"))
     import random

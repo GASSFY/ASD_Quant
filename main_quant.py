@@ -20,10 +20,8 @@ from asdq.calibration.coco_vl import get_multimodal_calib_dataset
 from asdq.calibration.hessian_collector import collect_hessian_diag
 from asdq.metrics import asd_kwargs_from_config
 from asdq.quantization.quantize import pseudo_quantize_model_weight
-from asdq.quantization.real_quant import (
-    apply_quantized_payload,
-    quantize_model_to_int4,
-)
+from asdq.quantization.checkpoint import load_checkpoint, save_checkpoint
+from asdq.quantization.real_quant import quantize_model_to_int4
 from asdq.quantization.mixed_precision import (
     compute_global_asd_list,
     select_high_precision_columns,
@@ -103,17 +101,7 @@ def _run_single(args: argparse.Namespace) -> None:
 
     if not args.run_process:
         if args.scale_path and os.path.exists(args.scale_path):
-            state = torch.load(args.scale_path, map_location="cpu", weights_only=True)
-            if isinstance(state, dict) and "quant_payload" in state:
-                ok = apply_quantized_payload(process_model.model, state["quant_payload"])
-                print(f"[ASDQ] Loaded quant payload from {args.scale_path}, applied={ok}")
-                if "state_dict" in state:
-                    lm._model.load_state_dict(state["state_dict"], strict=False)
-            elif isinstance(state, dict) and "state_dict" in state:
-                lm._model.load_state_dict(state["state_dict"], strict=False)
-            else:
-                lm._model.load_state_dict(state, strict=False)
-            print(f"[ASDQ] Loaded quantized state from {args.scale_path}")
+            load_checkpoint(lm._model, args.scale_path)
         return
 
     # Load calibration data (returned as lists of mini-batches)
@@ -184,14 +172,13 @@ def _run_single(args: argparse.Namespace) -> None:
             )
             print(f"[ASDQ] Pseudo quantization applied (uniform w_bit={args.w_bit}).")
 
-    # Save state_dict
     if args.scale_path:
-        os.makedirs(os.path.dirname(args.scale_path) or ".", exist_ok=True)
-        state_dict = lm._model.state_dict()
-        save_obj = {"state_dict": state_dict}
-        if quant_payload is not None:
-            save_obj["quant_payload"] = quant_payload
-        torch.save(save_obj, args.scale_path)
+        save_checkpoint(
+            lm._model,
+            args.scale_path,
+            quant_payload=quant_payload,
+            w_group=args.w_group,
+        )
         print(f"[ASDQ] Saved quantized state to {args.scale_path}")
 
 
