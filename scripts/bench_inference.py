@@ -230,6 +230,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--pseudo_quant", action="store_true", default=False)
     p.add_argument("--seed", default="0,1234,1234,1234")
     p.add_argument("--verbosity", default="ERROR")
+    p.add_argument(
+        "--output_path",
+        default="bench_results",
+        help="lmms-eval task output dir (OCRBench writes submission files here)",
+    )
     p.add_argument("--output_json", default="", help="Save summary JSON here")
     p.add_argument("--power_log", default="", help="If set, run nvidia-smi dmon to this file during inference")
     p.add_argument("--run_tag", default="", help="Label in JSON, e.g. fp16 or int4")
@@ -277,6 +282,7 @@ def run_benchmark(args: argparse.Namespace) -> dict:
     torch.manual_seed(seeds[2])
 
     total_limit = args.warmup + args.limit
+    os.makedirs(args.output_path, exist_ok=True)
     power_proc = None
     if args.power_log:
         print(f"[bench] Power logging -> {args.power_log}")
