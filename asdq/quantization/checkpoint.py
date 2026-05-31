@@ -40,6 +40,25 @@ def tensor_bytes(obj: Any) -> int:
     return 0
 
 
+def peek_checkpoint_format(path: str) -> str:
+    """Return checkpoint kind without loading into a model: ``v2``, ``pseudo``, or ``unknown``."""
+    if not path or not os.path.exists(path):
+        return "unknown"
+    state = torch.load(path, map_location="cpu", weights_only=True)
+    if not isinstance(state, dict):
+        return "pseudo"
+    if state.get("format") == CHECKPOINT_FORMAT_V2:
+        return "v2"
+    if "quant_payload" in state:
+        return "v2"
+    if "state_dict" in state:
+        sd = state["state_dict"]
+        if any(is_quant_state_key(k) for k in sd):
+            return "v2"
+        return "pseudo"
+    return "unknown"
+
+
 def summarize_checkpoint(path: str) -> Dict[str, Any]:
     """Return byte breakdown for a saved .pt file (for debugging size)."""
     state = torch.load(path, map_location="cpu", weights_only=True)

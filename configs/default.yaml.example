@@ -43,8 +43,10 @@ w_bit: 4
 # 分组大小（SpQR 中一行 x w_group 列为一组）
 w_group: 128
 pseudo_quant: true
+real_quant: false
 
 # ----- 评估参数（main_eval.py 使用） -----
+# 评估 v2 int4 checkpoint：real_quant: true（v2 格式也会自动走真量化加载）
 tasks: "mmmu_val"
 limit: null
 output_path: "eval_results"

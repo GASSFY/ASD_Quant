@@ -18,7 +18,7 @@ warnings.simplefilter("ignore", category=DeprecationWarning)
 from lmms_eval import evaluator, utils
 from lmms_eval.models import get_model
 from lmms_eval.tasks import TaskManager
-from asdq.quantization.checkpoint import load_checkpoint
+from asdq.quantization.eval_load import load_model_for_eval
 
 
 def _handle_non_serializable(o):
@@ -124,7 +124,18 @@ def parse_eval_args() -> argparse.Namespace:
     parser.add_argument("--include_path", type=str, default=None)
     parser.add_argument("--seed", type=str, default="0,1234,1234,1234")
     parser.add_argument("--scale_path", default=None, type=str, help="Path to saved quant state_dict (from main_quant.py)")
-    parser.add_argument("--pseudo_quant", action="store_true", default=False, help="If True and scale_path set, load quant weights")
+    parser.add_argument(
+        "--real_quant",
+        action="store_true",
+        default=False,
+        help="Load v2 int4 checkpoint (CPU-first, then GPU). Auto-detected from checkpoint format if unset.",
+    )
+    parser.add_argument(
+        "--pseudo_quant",
+        action="store_true",
+        default=False,
+        help="Load pseudo-quant float checkpoint (HF full load + state_dict overwrite).",
+    )
     parser.add_argument("--results_md", default=None, type=str, help="Path to markdown file for appending results")
     args = parser.parse_args()
     return args
@@ -199,16 +210,8 @@ def run_eval(args: argparse.Namespace) -> dict | None:
     if args.model_args is None:
         args.model_args = ""
 
-    # Load model
     ModelClass = get_model(args.model)
-    lm = ModelClass.create_from_arg_string(
-        args.model_args,
-        {"batch_size": args.batch_size, "device": args.device},
-    )
-
-    # Load quantized state if provided
-    if getattr(args, "scale_path", None) and os.path.exists(args.scale_path):
-        load_checkpoint(lm._model, args.scale_path)
+    lm = load_model_for_eval(ModelClass, args)
 
     seeds = _parse_seed(getattr(args, "seed", "0,1234,1234,1234"))
     import random

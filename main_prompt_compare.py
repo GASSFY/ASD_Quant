@@ -20,7 +20,7 @@ from PIL import Image
 from lmms_eval.models import get_model
 
 from asdq.models import get_process_model
-from asdq.quantization.checkpoint import load_checkpoint
+from asdq.quantization.eval_load import load_model_for_eval
 
 MODEL_NAME = "internvl2"
 MODEL_ARGS = "pretrained=OpenGVLab/InternVL2-8B"
@@ -32,6 +32,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image", type=str, default=None, help="Optional image path for single prompt.")
 
     parser.add_argument("--scale_path", type=str, default=None, help="Optional quantized .pt checkpoint path.")
+    parser.add_argument("--real_quant", action="store_true", default=False, help="Load v2 int4 checkpoint (CPU-first).")
+    parser.add_argument("--pseudo_quant", action="store_true", default=False, help="Load pseudo-quant float checkpoint.")
     parser.add_argument("--fp16_only", action="store_true", default=False, help="Only run FP16 model.")
     parser.add_argument("--max_new_tokens", type=int, default=128)
     parser.add_argument("--debug", action="store_true", default=False, help="Print generation debug info.")
@@ -52,16 +54,26 @@ def _build_samples(args: argparse.Namespace) -> list[dict[str, Any]]:
     return out
 
 
-def _load_internvl2(batch_size: str, device: str | None, scale_path: str | None):
+def _load_internvl2(
+    batch_size: str,
+    device: str | None,
+    scale_path: str | None,
+    *,
+    real_quant: bool = False,
+    pseudo_quant: bool = False,
+):
+    if scale_path and not os.path.exists(scale_path):
+        raise FileNotFoundError(f"Checkpoint not found: {scale_path}")
     model_class = get_model(MODEL_NAME)
-    lm = model_class.create_from_arg_string(
-        MODEL_ARGS,
-        {"batch_size": batch_size, "device": device},
+    load_args = argparse.Namespace(
+        model_args=MODEL_ARGS,
+        batch_size=batch_size,
+        device=device,
+        scale_path=scale_path,
+        real_quant=real_quant,
+        pseudo_quant=pseudo_quant,
     )
-    if scale_path:
-        if not os.path.exists(scale_path):
-            raise FileNotFoundError(f"Checkpoint not found: {scale_path}")
-        load_checkpoint(lm._model, scale_path)
+    lm = load_model_for_eval(model_class, load_args)
 
     process_model = get_process_model(MODEL_NAME)(
         lm._model,
@@ -207,7 +219,13 @@ def main() -> None:
         torch.cuda.empty_cache()
 
     if not args.fp16_only:
-        lm_quant, pm_quant = _load_internvl2(args.batch_size, args.device, args.scale_path)
+        lm_quant, pm_quant = _load_internvl2(
+            args.batch_size,
+            args.device,
+            args.scale_path,
+            real_quant=args.real_quant,
+            pseudo_quant=args.pseudo_quant,
+        )
         for i, s in enumerate(samples):
             rows[i]["quant"] = _generate_text(pm_quant, s, args.max_new_tokens, debug=args.debug)
         del pm_quant, lm_quant
