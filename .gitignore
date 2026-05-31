@@ -51,3 +51,5 @@ lmms-eval/
 
 old_eval_results/
 result_add/
+
+prep_pip_freeze_before_gptq.txt
