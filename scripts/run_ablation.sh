@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash 你好
 # ASDQ multi-model ablation: same theta1/theta2/ratio grid as run_ablation.sh, per model under eval_new_results/<model_dir>/
 # Usage: bash scripts/run_more_model.sh   (from any cwd — script cds to repo root)
 
